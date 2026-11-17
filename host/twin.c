@@ -2540,9 +2540,64 @@ static void sc_sounds(void)
     tap(B_HOME); wait_ms(300);
     save_and_wait();
 }
+/* the looper filmed (OUT/film.rgb565 30 pictures a second, OUT/film.wav): a first loop that sets the tempo, a second
+ * started and closed in the middle of bars, a one-bar drum loop that closes itself, an undo of the drums alone */
+static void lf_play(int ch, const uint8_t *n, const uint16_t *at, int cnt, int hold)   /* notes at their ms from now, by hand */
+{
+    double t0 = tw_s() * 1000.0;
+    for (int i = 0; i < cnt; i++) { double w = t0 + at[i] - tw_s() * 1000.0; if (w > 0) wait_ms(w); midi_send((uint8_t)(0x90 | ch), n[i], 100); wait_ms(hold); midi_send((uint8_t)(0x80 | ch), n[i], 0); }
+}
+static void sc_loopfilm(void)
+{
+    boot_wait();
+    press(B_HOME); tapkey(white_key[HK_NEW]); release(B_HOME); wait_ms(300);
+    press(B_HOME); tapkey(white_key[HK_NEW]); release(B_HOME); wait_ms(1800);
+    char fn[512];
+    snprintf(fn, sizeof fn, "%s/film.rgb565", tw_out); tw_film = fopen(fn, "wb"); tw_film_t = tw_s();
+    wav_on("film");
+    wait_ms(1200);
+    /* 1. the first loop: the bass, played freely; REC closes it and the tempo is worked out (2 bars at about 115) */
+    tap(B_REC); wait_ms(1200);
+    static const uint8_t BN[8] = { 36, 36, 43, 36, 39, 39, 41, 43 };
+    static const uint16_t BA[8] = { 0, 540, 1010, 1580, 2090, 2600, 3150, 3640 };
+    lf_play(0, BN, BA, 8, 260);
+    wait_ms(4170 - 3640 - 260);
+    press(B_REC); wait_ms(50); release(B_REC);
+    wait_ms(4600);
+    /* 2. the keys: REC in the middle of a bar (it waits for the line), chords a little off the beat, REC mid-bar again */
+    select_track(1); wait_ms(600);
+    tap(B_REC);
+    while (!ltake.rec && ltake.armed_trk >= 0) wait_ms(10);
+    double beat = 60000.0 / Q.bpm;
+    static const uint8_t KN[6] = { 60, 63, 67, 58, 62, 65 };
+    for (int i = 0; i < 6; i++) { wait_ms(i % 3 == 0 ? beat * 0.52 : beat * 0.74); midi_send(0x91, KN[i], 100); wait_ms(beat * 0.5); midi_send(0x81, KN[i], 0); }
+    wait_ms(beat * 0.4);
+    press(B_REC); wait_ms(50); release(B_REC);
+    while (ltake.armed_trk >= 0) wait_ms(10);
+    printf("[%8.3f]    keys: %d bars, %d notes\n", tw_s(), Q.t[1].pat[Q.t[1].cur].steps / 16, seq_count(&Q, 1));
+    wait_ms(beat * 8);
+    /* 3. the drums: BARS on 1, REC, a bar of kick and snare; it closes itself on the line */
+    select_track(3); wait_ms(500);
+    turn(ENC_KNOB3, 1); wait_ms(900);
+    tap(B_REC);
+    while (!ltake.rec && ltake.armed_trk >= 0) wait_ms(10);
+    static const uint8_t DN[6] = { 36, 42, 38, 42, 36, 38 };
+    for (int i = 0; i < 6; i++) { midi_send(0x99, DN[i], 100); wait_ms(60); midi_send(0x89, DN[i], 0); wait_ms(beat * (i == 4 ? 0.5 : i == 3 ? 0.5 : 0.75) - 60); }
+    while (ltake.armed_trk >= 0) wait_ms(10);
+    printf("[%8.3f]    drums: %d bars, %d notes\n", tw_s(), Q.t[3].pat[Q.t[3].cur].steps / 16, seq_count(&Q, 3));
+    wait_ms(beat * 16);
+    /* 4. SEL + OCT-: the drums alone undone; SEL + OCT+: back */
+    press(B_SEL); tap(B_OCTD); release(B_SEL);
+    wait_ms(beat * 8);
+    press(B_SEL); tap(B_OCTU); release(B_SEL);
+    wait_ms(beat * 8);
+    tap(B_PLAY); wait_ms(800);
+    tw_wav_close();
+    if (tw_film) { fclose(tw_film); tw_film = 0; }
+}
 static const struct { const char *name; void (*fn)(void); } SC[] = {
     { "boot", sc_boot }, { "reboot", sc_reboot }, { "sounds", sc_sounds }, { "ukit", sc_ukit }, { "pages", sc_pages }, { "record", sc_record },
-    { "loop", sc_loop }, { "loop2", sc_loop2 }, { "loop3", sc_loop3 }, { "loop4", sc_loop4 }, { "loopwrap", sc_loopwrap }, { "loop5", sc_loop5 }, { "powercut", sc_powercut }, { "aftercut", sc_after_cut }, { "sample", sc_sample }, { "editor", sc_editor },
+    { "loop", sc_loop }, { "loop2", sc_loop2 }, { "loop3", sc_loop3 }, { "loop4", sc_loop4 }, { "loopwrap", sc_loopwrap }, { "loop5", sc_loop5 }, { "loopfilm", sc_loopfilm }, { "powercut", sc_powercut }, { "aftercut", sc_after_cut }, { "sample", sc_sample }, { "editor", sc_editor },
     { "monkey", sc_monkey }, { "import", sc_import }, { "midi", sc_midi }, { "rescue", sc_rescue }, { "calib", sc_calib }, { "settings", sc_settings }, { "play", sc_play }, { "levels", sc_levels }, { "mixui", sc_mixui }, { "fx", sc_fx }, { "editor2", sc_editor2 }, { "serve", sc_serve }, { "vis", sc_vis }, { "banksave", sc_banksave }, { "punch", sc_punch }, { "film", sc_film }, { "inst", sc_inst }, { "film2", sc_film2 }, { "bigproj", sc_bigproj }, { "bigcut", sc_bigcut }, { "punch2", sc_punch2 }, { "crumb", sc_crumb }, { "nan", sc_nan } };
 static void (*tw_sc)(void);
 static void *tw_script(void *arg)
