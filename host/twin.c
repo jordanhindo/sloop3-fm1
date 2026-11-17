@@ -717,6 +717,29 @@ static void sc_loop5(void)                  /* BARS: each empty track's FREE / 1
     EXPECT(Q.t[1].pat[Q.t[1].cur].steps == 32 && Q.t[1].origin == start + 2 * SEQ_BAR, "track 2: %d steps, its beginning %u ticks off the end line", Q.t[1].pat[Q.t[1].cur].steps, Q.t[1].origin - (start + 2 * SEQ_BAR));
     EXPECT(!Q.recording, "the take's close left recording on");
     shot("bars-two-loops");
+    /* SEL + OCT-: track 2's undo alone (track 1's later edits left); SEL + OCT+: its redo */
+    select_track(0); turn(ENC_KNOB3, 1); turn(ENC_KNOB3, -1);        /* two edits of track 1 after track 2's take */
+    int n1 = seq_count(&Q, 0), st1 = Q.t[0].pat[Q.t[0].cur].steps, oct0 = oct;
+    select_track(1);
+    m = msg_mark();
+    press(B_SEL); tap(B_OCTD); release(B_SEL); wait_ms(200);
+    EXPECT(said_since(m, "UNDONE") && seq_count(&Q, 1) == 0, "SEL + OCT-: track 2's take is still there (%d notes)", seq_count(&Q, 1));
+    EXPECT(seq_count(&Q, 0) == n1 && Q.t[0].pat[Q.t[0].cur].steps == st1, "SEL + OCT- on track 2 changed track 1");
+    EXPECT(oct == oct0 && sticky == PG_TRACKS, "SEL + OCT-: the octave moved (%d) or the SEL page opened (%d)", oct, sticky);
+    m = msg_mark();
+    press(B_SEL); tap(B_OCTD); release(B_SEL); wait_ms(200);
+    EXPECT(said_since(m, "NOTHING TO UNDO"), "a second SEL + OCT- on track 2: no NOTHING TO UNDO");
+    m = msg_mark();
+    press(B_SEL); tap(B_OCTU); release(B_SEL); wait_ms(200);
+    EXPECT(said_since(m, "REDONE") && seq_count(&Q, 1) == 1 && Q.t[1].pat[Q.t[1].cur].steps == 32, "SEL + OCT+: track 2's take is not back (%d notes)", seq_count(&Q, 1));
+    tap(B_OCTD); EXPECT(oct == oct0 - 1, "OCT- alone no longer moves the octave"); tap(B_OCTU);
+    select_track(2);                                                 /* a take waiting on track 3: its undo is refused */
+    tap(B_REC);
+    m = msg_mark();
+    press(B_SEL); tap(B_OCTD); release(B_SEL); wait_ms(200);
+    EXPECT(said_since(m, "STILL RECORDING") && ltake.armed_trk == 2, "SEL + OCT- under a take: no STILL RECORDING");
+    tap(B_PLAY); wait_ms(200);                                       /* (PLAY: the take cancelled) */
+    EXPECT(ltake.armed_trk < 0 && Q.playing, "PLAY did not cancel the take");
     tap(B_PLAY); wait_ms(300);
     save_and_wait();
     check_project_roundtrip("after the BARS takes");

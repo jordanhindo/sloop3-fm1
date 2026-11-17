@@ -498,10 +498,60 @@ static void loop_stack_test(void)
     CHECK(pos_of(0) == 2 && pos_of(1) == 2, "steps %d and %d (2 and 2)", pos_of(0), pos_of(1));
     seq_play(&S, 0);
 }
+/* one track's undo and redo (SEL + OCT), the other tracks' edits passed over */
+static int cnt(int t) { return seq_count(&S, t); }
+static void undo_trk_test(void)
+{
+    printf("undo of one track: A1 B1 A2, then track 1 undone twice and redone twice; track 2 never touched\n");
+    seq_init(&S, 44100.0f, 120.0f, &H);
+    seq_add(&S, 0, 0, 96, 60, 100);                       /* A1 */
+    seq_add(&S, 1, 100, 96, 72, 100);                     /* B1 */
+    seq_add(&S, 0, 400, 96, 64, 100);                     /* A2 */
+    CHECK(H.n_undo == 3 && cnt(0) == 2 && cnt(1) == 1, "setup: %d undo, %d / %d notes", H.n_undo, cnt(0), cnt(1));
+    CHECK(seq_undo_trk(&S, 0) && cnt(0) == 1 && cnt(1) == 1, "undo A2: %d / %d notes (want 1 / 1)", cnt(0), cnt(1));
+    CHECK(seq_undo_trk(&S, 0) && cnt(0) == 0 && cnt(1) == 1, "undo A1: %d / %d notes (want 0 / 1)", cnt(0), cnt(1));
+    CHECK(H.n_undo == 1 && H.n_redo == 2 && H.h[0].trk == 1, "the history after: %d undo, %d redo, the one left is track %d's", H.n_undo, H.n_redo, H.h[0].trk + 1);
+    CHECK(!seq_undo_trk(&S, 0) && cnt(1) == 1, "a third undo of track 1 did something");
+    CHECK(seq_redo_trk(&S, 0) && cnt(0) == 1 && S.t[0].pat[0].ev[0].note == 60, "redo A1: %d notes", cnt(0));
+    CHECK(seq_redo_trk(&S, 0) && cnt(0) == 2 && S.t[0].pat[0].ev[1].note == 64 && S.t[0].pat[0].ev[1].tick == 400, "redo A2: %d notes", cnt(0));
+    CHECK(!seq_redo_trk(&S, 0) && cnt(1) == 1 && H.n_undo == 3 && H.n_redo == 0, "after the redos: %d undo, %d redo, track 2 %d notes", H.n_undo, H.n_redo, cnt(1));
+    /* the undo of everything still walks back to the start, after the two kinds were mixed */
+    seq_undo_trk(&S, 1);                                  /* B1 undone alone */
+    CHECK(cnt(0) == 2 && cnt(1) == 0, "undo of track 2 alone: %d / %d notes (want 2 / 0)", cnt(0), cnt(1));
+    CHECK(seq_undo(&S) && cnt(0) == 1, "the undo of all, after: track 1 has %d notes (want 1)", cnt(0));
+    CHECK(seq_redo(&S) && cnt(0) == 2 && cnt(1) == 0, "the redo of all gives the last undone back: %d / %d", cnt(0), cnt(1));
+    CHECK(seq_redo_trk(&S, 1) && cnt(1) == 1, "track 2's redo, across track 1's: %d notes", cnt(1));
+    while (seq_undo(&S)) { }
+    CHECK(cnt(0) == 0 && cnt(1) == 0 && H.n_undo == 0, "the undo of all did not reach the start (%d / %d notes)", cnt(0), cnt(1));
+    /* an edit anywhere forgets every redo (SLOOP's rule) */
+    seq_init(&S, 44100.0f, 120.0f, &H);
+    seq_add(&S, 0, 0, 96, 60, 100); seq_undo_trk(&S, 0); seq_add(&S, 1, 0, 96, 72, 100);
+    CHECK(!seq_redo_trk(&S, 0) && cnt(0) == 0, "track 1's redo outlived an edit of track 2");
+    /* many mixes against a model: each track's own states in a row, its place in them */
+    uint32_t r = 12345u; int bad = 0;
+    for (int round = 0; round < 300; round++) {
+        seq_init(&S, 44100.0f, 120.0f, &H);
+        int n[3] = { 1, 1, 1 }, at[3] = { 0, 0, 0 }, st[3][10] = { { 0 }, { 0 }, { 0 } }, edits = 0;
+        for (int k = 0; k < 24; k++) {
+            r = r * 1664525u + 1013904223u; int t = (int)(r >> 24) % 3, op = (int)(r >> 12) % 3;
+            if (op == 0 && edits < 8) {                   /* an edit: one more note (8: what the history holds) */
+                seq_add(&S, t, (uint32_t)(cnt(t) * 50 + 7), 40, 60, 100); edits++;
+                for (int u = 0; u < 3; u++) n[u] = at[u] + 1;
+                st[t][++at[t]] = cnt(t); n[t] = at[t] + 1;
+            } else if (op == 1) { int did = seq_undo_trk(&S, t); if (did != (at[t] > 0)) bad++; if (did) at[t]--; }
+            else if (op == 2) { int did = seq_redo_trk(&S, t); if (did != (at[t] < n[t] - 1)) bad++; if (did) at[t]++; }
+            for (int u = 0; u < 3; u++) if (cnt(u) != st[u][at[u]]) bad++;
+            if (H.n_undo + H.n_redo > SEQ_UNDO) bad++;
+        }
+        while (seq_undo(&S)) { }
+        for (int u = 0; u < 3; u++) if (cnt(u)) bad++;
+    }
+    CHECK(!bad, "300 mixes of edits, undos and redos of three tracks: %d differences from the model", bad);
+}
 int main(void)
 {
     add_test(); div_test();
-    timing_test(); polymeter_test(); switch_test(); record_test(); edit_test(); step_test(); song_test(); song_hand_test(); move_test(); lenmax_test(); put_test(); sloop_test(); accent_slide_test(); loop_stack_test();
+    timing_test(); polymeter_test(); switch_test(); record_test(); edit_test(); step_test(); song_test(); song_hand_test(); move_test(); lenmax_test(); put_test(); sloop_test(); accent_slide_test(); loop_stack_test(); undo_trk_test();
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

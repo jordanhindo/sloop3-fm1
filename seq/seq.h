@@ -170,3 +170,5 @@ uint32_t seq_heard(const seq_t *s, uint32_t latency_frames);   /* the tick the p
 void seq_catch_up(seq_t *s, int trk, uint32_t from);            /* the track's notes from that tick (the sequencer's) to now, played at once: a pattern written behind the playhead */
 int seq_undo(seq_t *s);                                  /* 1 if something was undone */
 int seq_redo(seq_t *s);
+int seq_undo_trk(seq_t *s, int trk);                      /* that track's newest edit alone, the others' passed over; 1 if something was undone */
+int seq_redo_trk(seq_t *s, int trk);

@@ -78,6 +78,40 @@ int seq_redo(seq_t *s)
     return 1;
 }
 
+/* One track's undo and redo, the others' edits passed over. Each entry is one pattern whole, so the entries of two
+ * tracks do not depend on each other: the entry taken is swapped with its pattern, then moved to the border between
+ * undo and redo past the other tracks' entries (their order kept), where seq_undo / seq_redo expect it. */
+static void swap_snap(seq_snap *a, seq_snap *b)
+{
+    uint8_t t = a->trk; a->trk = b->trk; b->trk = t;
+    t = a->pat; a->pat = b->pat; b->pat = t;
+    swap_pat(&a->p, &b->p);
+}
+SEQ_COLD int seq_undo_trk(seq_t *s, int trk)
+{
+    seq_hist *h = s->hist;
+    if (!h) return 0;
+    int i = h->n_undo - 1;
+    while (i >= 0 && h->h[i].trk != trk) i--;                /* its newest edit */
+    if (i < 0) return 0;
+    swap_pat(&h->h[i].p, &s->t[trk].pat[h->h[i].pat]);
+    for (; i < h->n_undo - 1; i++) swap_snap(&h->h[i], &h->h[i + 1]);
+    h->n_undo--; h->n_redo++;
+    return 1;
+}
+SEQ_COLD int seq_redo_trk(seq_t *s, int trk)
+{
+    seq_hist *h = s->hist;
+    if (!h) return 0;
+    int i = h->n_undo, end = h->n_undo + h->n_redo;
+    while (i < end && h->h[i].trk != trk) i++;               /* the edit it undid last */
+    if (i >= end) return 0;
+    swap_pat(&h->h[i].p, &s->t[trk].pat[h->h[i].pat]);
+    for (; i > h->n_undo; i--) swap_snap(&h->h[i], &h->h[i - 1]);
+    h->n_undo++; h->n_redo--;
+    return 1;
+}
+
 /* ---------------------------------------------------------------- pattern edits */
 static int insert_i(seq_pat *p, seq_ev e)              /* kept sorted by tick: where it went, -1 if full */
 {

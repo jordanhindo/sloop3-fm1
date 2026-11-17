@@ -3179,6 +3179,15 @@ COLD static void loop_say(void)                                      /* a first 
     p = put_u(p, (uint32_t)nb); p = put_s(p, " BARS "); p = put_u(p, (uint32_t)(bpm + 0.5f)); *p = 0;
     say(b);
 }
+/* SEL + OCT- / OCT+: the selected track's undo / redo, the other tracks' edits left alone (EDIT + OCT: the last edit
+ * anywhere, as before). Refused while that track is being recorded: an undo under a take would put notes back below it */
+COLD static void undo_track(int redo)
+{
+    layer_used = 1;
+    if (ltake.armed_trk == trk || (Q.recording && Q.rec_trk == trk)) { say_bad("STILL RECORDING"); return; }
+    if (redo ? seq_redo_trk(&Q, trk) : seq_undo_trk(&Q, trk)) say(redo ? "REDONE" : "UNDONE");
+    else say_bad(redo ? "NOTHING TO REDO" : "NOTHING TO UNDO");
+}
 /* BARS, an empty track's choice for its next take: FREE, 1, 2, 4, 8 (as many as the track's DIV holds) */
 COLD static void bars_turn(int t, int d)
 {
@@ -3273,6 +3282,7 @@ COLD static void buttons(void)
         case BTN_OCT_DOWN:
             if (lay_on(BTN_FX)) layer_used = 1;              /* (FX: the reverb throw, above) */
             else if (lay_on(BTN_EDIT)) { layer_used = 1; if (seq_undo(&Q)) say("UNDONE"); else say_bad("NOTHING TO UNDO"); }
+            else if (lay_on(BTN_SEL)) undo_track(0);        /* SEL + OCT-: the selected track's undo alone */
             else if (hold_step >= 0) {
                 for (int si = -1; si < 16; si++) { int st = si < 0 ? hold_step : ((hold_more >> si) & 1u) ? hold_page * 16 + si : -1; if (st < 0) continue; seq_step_reset(&Q, trk, st); seq_step_nudge(&Q, trk, st, 0); }
                 hold_erase = 0;
@@ -3286,6 +3296,7 @@ COLD static void buttons(void)
         case BTN_OCT_UP:
             if (lay_on(BTN_FX)) layer_used = 1;              /* (FX: the echo throw) */
             else if (lay_on(BTN_EDIT)) { layer_used = 1; if (seq_redo(&Q)) say("REDONE"); else say_bad("NOTHING TO REDO"); }
+            else if (lay_on(BTN_SEL)) undo_track(1);        /* SEL + OCT+: its redo */
             else if (hold_step >= 0) {                       /* the step's condition, the next one */
                 hold_erase = 0;
                 int c; seq_step_info(&Q, trk, hold_step, &c, 0);
