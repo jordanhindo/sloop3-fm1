@@ -230,6 +230,20 @@ int main(void)
     v.page = UI_TRACKS; snprintf(v.status, sizeof v.status, "TAKE"); v.status_col = RGB(255, 80, 80); v.playing = 0;
     knob(&v, 0, "SWING", "0", 0, 0); knob(&v, 1, "LEVEL", "81", 81, 0); knob(&v, 2, "STEPS", "16", 12, 0); knob(&v, 3, "PAN", "0", 50, 0);
     v.info = "TAKE 3.4s · 2 BARS 96"; shoot(&v, "30-prise"); v.info = 0;
+    /* the looper on TRACKS: a loop going round (its ring 5 / 8 filled, its lane and playhead), a take recording, a
+     * take waiting for its bar line, an overdub, a first take with a key just played, a muted loop */
+    { ui_view u = v; u.playing = 1; snprintf(u.status, sizeof u.status, "P1"); u.status_col = 0;
+      knob(&u, 0, "FILTER", "OFF", 50, 0); knob(&u, 2, "BARS", "4", 50, 0);
+      static const uint8_t AT[6] = { 0, 21, 40, 66, 90, 117 };
+      for (int t = 0; t < 5; t++) { u.loop[t] = 0; u.pie[t] = 0; u.head[t] = 255; }
+      memset(u.cells[0], 0, 16); for (int i = 0; i < 6; i++) u.cells[0][AT[i] >> 3] |= (uint8_t)(1u << (AT[i] & 7));
+      u.loop[0] = UL_CIRCLE | UL_LANE; u.pie[0] = 40; u.head[0] = 80;
+      memset(u.cells[1], 0, 16); u.loop[1] = UL_CIRCLE | UL_LANE | UL_REC; u.pie[1] = 20;
+      memset(u.cells[2], 0, 16); u.loop[2] = UL_CIRCLE | UL_LANE | UL_WAIT; u.pie[2] = 50;
+      memcpy(u.cells[3], u.cells[0], 16); u.loop[3] = UL_CIRCLE | UL_LANE | UL_DUB; u.pie[3] = 64; u.head[3] = 10; u.rec[3] = 1;
+      memcpy(u.cells[4], u.cells[0], 16); u.loop[4] = UL_CIRCLE | UL_LANE; u.pie[4] = 8;
+      shoot(&u, "31-looper");
+      u.loop[1] = UL_REC | UL_FIRST | UL_HIT; u.loop[2] = UL_REC | UL_FIRST; u.blink = 0; shoot(&u, "32-looper-first"); }
     /* beta 4: DRUMS (SEQ tapped on the drums), the arpeggiator, the sends */
     v.toast = 0; v.playing = 1; v.trk = 3; v.page = UI_DRUMS; v.pad_names = PADS; v.drum_sel = 4; v.drum_at = 6;
     static const char *const DG[16] = { "x...x...x...x...", "", "....x.......x...", "............x..x", "..x...x...x...x.", "......x.......x.", "", "", "", "", "", "x...............", "", "", "", "" };

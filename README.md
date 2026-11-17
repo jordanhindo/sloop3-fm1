@@ -3,6 +3,10 @@
 **A free groovebox firmware for the M-VAVE FM-1, rewritten from scratch.** Five tracks, 13 sound engines, 153
 sounds, 46 drum kits, a step sequencer with a piano roll, 27 punch-in effects, six visualisers and a web editor.
 
+> **This fork (branch `loop`) adds a free-form looper:** play, close, stack loops that line up to the bar, undo one
+> track at a time. How to use it: [docs/LOOPER.md](docs/LOOPER.md). It has passed the tests and the PC twin; it has
+> not yet run on a real FM-1. The installer link below is upstream's and does not include the looper.
+
 > **⚠ Public beta.** SLOOP 3 plays like SLOOP 2.8, but almost every line is new: the sound engine, the sequencer and
 > the interface were written again, from zero. It is being tested on real FM-1s right now. **Expect bugs, keep
 > backups, and don't rely on it on stage yet.** Please [report what you find](../../issues/new/choose).

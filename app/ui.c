@@ -343,16 +343,50 @@ static void step_cell(int x, int y, int w, int h, uint8_t f, uint16_t c)
     if (f & UC_PLAY) gfx_fill(x, y + h + 1, w, 2, TXT);
     if (f & (UC_LOCK | UC_COND | UC_RAT)) gfx_fill(x, y - 3, w, 2, YEL);
 }
+/* the circle's fill: the part of the disc from the top, clockwise, to f / 64 of a turn */
+static int sin64(int i)
+{
+    static const uint8_t T[17] = { 0, 12, 25, 37, 49, 60, 71, 81, 90, 98, 106, 112, 117, 122, 125, 126, 127 };
+    i &= 63;
+    return i <= 16 ? T[i] : i <= 32 ? T[32 - i] : i <= 48 ? -T[i - 32] : -T[64 - i];
+}
+static void pie(int cx, int cy, int r, int f, uint16_t c)
+{
+    if (f <= 0 || !gfx_visible(cx - r, cy - r, 2 * r + 1, 2 * r + 1)) return;
+    int ux = sin64(f), uy = sin64(f + 16);                 /* where the fill ends (y up) */
+    for (int dy = -r; dy <= r; dy++) {
+        int x0 = 0, n = 0;
+        for (int dx = -r; dx <= r + 1; dx++) {
+            int in = dx <= r && dx * dx + dy * dy <= r * r;
+            if (in && f < 64) { int cr = ux * -dy - uy * dx; in = f <= 32 ? dx >= 0 && cr > 0 : dx >= 0 || cr > 0; }
+            if (in) { if (!n) x0 = dx; n++; }
+            else if (n) { gfx_fill(cx + x0, cy + dy, n, 1, c); n = 0; }
+        }
+    }
+}
 static void page_tracks(const ui_view *v)
 {
     for (int t = 0; t < v->ntrk && t < 5; t++) {
         int y = HEAD_Y + t * 28;
         if (!gfx_visible(0, y - 6, GFX_W, 34)) continue;
         uint16_t c = v->col[t], cc = v->mute[t] ? dim(c) : c;
-        if (t == v->trk) gfx_rfill(2, y, 236, 27, 5, PANEL);
+        uint8_t lp = v->loop[t];
+        /* the row: red while a take records on it (blinking while it waits for its bar line), yellow while overdubbed */
+        uint16_t row = t == v->trk ? PANEL : BG;
+        if ((lp & UL_REC) || ((lp & UL_WAIT) && v->blink)) row = gfx_mix(BG, RED, 11);
+        else if (lp & UL_DUB) row = gfx_mix(BG, YEL, 9);
+        if (row != BG) gfx_rfill(2, y, 236, 27, 5, row);
         char n[2] = { (char)('1' + t), 0 };
-        if (v->mute[t]) { gfx_rframe(5, y + 3, 21, 21, 4, 2, cc); gfx_text_c(&font_s, 15, y + 3 + (21 - font_s.cap) / 2, n, cc); }
-        else { gfx_rfill(5, y + 3, 21, 21, 4, c); gfx_text_c(&font_s, 15, y + 3 + (21 - font_s.cap) / 2, n, BG); }
+        int ny = y + 3 + (21 - font_s.cap) / 2;
+        if (lp & UL_FIRST) {                                 /* a first take: no tempo yet, a red disc, lighter at each key */
+            gfx_disc(15, y + 13, 10, lp & UL_HIT ? gfx_mix(RED, TXT, 16) : RED); gfx_text_c(&font_s, 15, ny, n, BG);
+        } else if (lp & UL_CIRCLE) {                         /* a track that holds notes: its number in a ring, filled as its loop goes round */
+            gfx_disc(15, y + 13, 10, cc); gfx_disc(15, y + 13, 8, row);
+            pie(15, y + 13, 8, v->pie[t], gfx_mix(row, cc, 16));
+            gfx_text_c(&font_s, 15, ny, n, TXT);
+        }
+        else if (v->mute[t]) { gfx_rframe(5, y + 3, 21, 21, 4, 2, cc); gfx_text_c(&font_s, 15, ny, n, cc); }
+        else { gfx_rfill(5, y + 3, 21, 21, 4, c); gfx_text_c(&font_s, 15, ny, n, BG); }
         /* the sound and its kind, a badge */
         char nm[20]; sound_name(nm, v, t);
         const char *badge = v->rec[t] ? "REC" : v->solo[t] ? "SOLO" : v->mute[t] ? "MUTE" : 0;
@@ -362,7 +396,12 @@ static void page_tracks(const ui_view *v)
         if (v->kind[t] && e + 6 + gfx_text_w(&font_s, v->kind[t]) < 234 - bw) gfx_text(&font_s, e + 6, y + 3, v->kind[t], cc);
         if (badge) gfx_text_r(&font_s, 234, y + 3, badge, bc);
         /* the steps, the level */
-        for (int i = 0; i < 16; i++) step_cell(31 + i * 11 + (i / 4) * 2, y + 19, 9, 5, v->cells[t][i], cc);
+        if (lp & UL_LANE) {                                  /* played notes: each where it is in the whole loop, and the playhead */
+            gfx_fill(31, y + 19, 180, 5, PANEL2);
+            for (int i = 0; i < 128; i++) if ((v->cells[t][i >> 3] >> (i & 7)) & 1u) gfx_fill(31 + i * 180 / 128, y + 18, 2, 7, cc);
+            if (v->head[t] < 128) gfx_fill(31 + v->head[t] * 180 / 128, y + 16, 1, 11, TXT);
+        }
+        else for (int i = 0; i < 16; i++) step_cell(31 + i * 11 + (i / 4) * 2, y + 19, 9, 5, v->cells[t][i], cc);
         gfx_fill(214, y + 19, 20, 5, LINE);
         gfx_fill(214, y + 19, 20 * v->level[t] / 100, 5, cc);
     }

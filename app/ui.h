@@ -39,6 +39,9 @@ enum { TF_PLAY = 1, TF_DOT = 2, TF_FILL = 4, TF_NOFILL = 8, TF_BAR = 16, TF_BLIN
 typedef struct { const char *label; char value[10]; int8_t bar; uint8_t hot, dial; } ui_knob;   /* bar 0..100, -1 none */
 typedef struct { char text[11]; uint8_t style, flags; uint16_t col; uint8_t lvl; } ui_tile;   /* lvl: TF_LEVEL, 0..100 */
 /* a note of the NOTES page: where (quarter steps in the 16 shown), how long, its pitch, NR_* */
+/* a track of the looper: it holds notes (its number in a circle); its notes as a lane (played, not programmed); a take
+ * recording on it, waiting for its bar line, an overdub; a first take (no tempo yet), a key just played into it */
+enum { UL_CIRCLE = 1, UL_LANE = 2, UL_REC = 4, UL_WAIT = 8, UL_DUB = 16, UL_FIRST = 32, UL_HIT = 64 };
 typedef struct { uint8_t x, len, pitch, flags; } ui_note;
 enum { NR_SEL = 1, NR_ACC = 2, NR_SLIDE = 4, NR_SOFT = 8, NR_GHOST = 16 };
 #define UI_NOTES_MAX 64
@@ -56,6 +59,9 @@ typedef struct {
     const char *kind[UI_NTRK];                     /* its engine, in words */
     uint8_t mute[UI_NTRK], solo[UI_NTRK], rec[UI_NTRK], level[UI_NTRK], edited[UI_NTRK];
     uint8_t cells[UI_NTRK][16];
+    /* the looper (TRACKS): each track's UL_*; its circle's fill, 0..64 of a turn; its lane's playhead, a column 0..127
+     * (255: none). With UL_LANE, cells[t] is the lane itself: 128 columns, a bit each (column c: bit c & 7 of byte c >> 3) */
+    uint8_t loop[UI_NTRK], pie[UI_NTRK], head[UI_NTRK];
     /* a layer: its title, a line beside it, its tiles */
     char title[12], sub[40]; uint16_t title_col;
     ui_tile tile[16];

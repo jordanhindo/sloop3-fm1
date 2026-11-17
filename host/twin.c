@@ -679,7 +679,7 @@ static void sc_loop5(void)                  /* BARS: each empty track's FREE / 1
     shot("bars-rec-screen");
     turn(ENC_KNOB2, -1);                         /* the REC screen's BARS: 2 now, the take's too */
     EXPECT(bars_pick[0] == 2 && ltake.target == 2, "the REC screen's BARS: %d, take %d (want 2, 2)", bars_pick[0], ltake.target);
-    for (int i = 0; i < 4; i++) { wait_ms(i * 37); midi_send(0x90, 60 + i, 100); wait_ms(1000); midi_send(0x80, 60 + i, 0); wait_ms(1000 - i * 37); }   /* (by hand: off the steps) */
+    for (int i = 0; i < 4; i++) { wait_ms(i * 37); midi_send(0x90, 60 + i, 100); wait_ms(100); if (i == 1) shot("loop-first-hit"); wait_ms(900); if (i == 1) shot("loop-first"); midi_send(0x80, 60 + i, 0); wait_ms(1000 - i * 37); }   /* (by hand: off the steps) */
     m = msg_mark();
     press(B_REC); wait_ms(50); release(B_REC); wait_ms(300);
     EXPECT(said_since(m, "TAKE: 2 BARS · 60 BPM"), "8 s with 2 chosen: not 2 bars at 60 (%.1f BPM, %d steps)", Q.bpm, Q.t[0].pat[Q.t[0].cur].steps);
@@ -709,29 +709,42 @@ static void sc_loop5(void)                  /* BARS: each empty track's FREE / 1
     while (!ltake.rec && ltake.armed_trk >= 0) wait_ms(10);
     uint32_t start = ltake.start;
     EXPECT(start % SEQ_BAR == 0 && Q.tick - start < 40, "recording did not start on a bar line");
-    midi_send(0x91, 60, 100); wait_ms(400); midi_send(0x81, 60, 0);
+    wait_ms(137); midi_send(0x91, 60, 100); wait_ms(400); midi_send(0x81, 60, 0); wait_ms(300);
+    shot("loop-rec");
+    midi_send(0x91, 67, 100); wait_ms(200); midi_send(0x81, 67, 0);
     m = msg_mark();
     while (ltake.armed_trk >= 0) wait_ms(10);
     wait_ms(100);
     EXPECT(said_since(m, "TAKE: 2 BARS · 120 BPM"), "2 chosen: no TAKE: 2 BARS · 120 BPM");
     EXPECT(Q.t[1].pat[Q.t[1].cur].steps == 32 && Q.t[1].origin == start + 2 * SEQ_BAR, "track 2: %d steps, its beginning %u ticks off the end line", Q.t[1].pat[Q.t[1].cur].steps, Q.t[1].origin - (start + 2 * SEQ_BAR));
     EXPECT(!Q.recording, "the take's close left recording on");
-    shot("bars-two-loops");
+    wait_ms(700); shot("bars-two-loops");
+    tap(B_REC); wait_ms(300);                                        /* REC on a track that holds a loop: the overdub */
+    EXPECT(Q.recording && Q.rec_trk == 1, "REC on a loop while playing: not overdubbing");
+    shot("loop-dub");
+    tap(B_REC); wait_ms(200);
+    EXPECT(!Q.recording, "REC again did not end the overdub");
+    seq_mute(&Q, 0, 1); wait_ms(300); shot("loop-muted"); seq_mute(&Q, 0, 0);
     /* SEL + OCT-: track 2's undo alone (track 1's later edits left); SEL + OCT+: its redo */
     select_track(0); turn(ENC_KNOB3, 1); turn(ENC_KNOB3, -1);        /* two edits of track 1 after track 2's take */
     int n1 = seq_count(&Q, 0), st1 = Q.t[0].pat[Q.t[0].cur].steps, oct0 = oct;
     select_track(1);
     m = msg_mark();
+    press(B_SEL); tap(B_OCTD); release(B_SEL); wait_ms(200);             /* (the overdub pass, then the take) */
     press(B_SEL); tap(B_OCTD); release(B_SEL); wait_ms(200);
-    EXPECT(said_since(m, "UNDONE") && seq_count(&Q, 1) == 0, "SEL + OCT-: track 2's take is still there (%d notes)", seq_count(&Q, 1));
+    EXPECT(said_since(m, "UNDONE") && seq_count(&Q, 1) == 0, "SEL + OCT- twice: track 2's take is still there (%d notes)", seq_count(&Q, 1));
     EXPECT(seq_count(&Q, 0) == n1 && Q.t[0].pat[Q.t[0].cur].steps == st1, "SEL + OCT- on track 2 changed track 1");
     EXPECT(oct == oct0 && sticky == PG_TRACKS, "SEL + OCT-: the octave moved (%d) or the SEL page opened (%d)", oct, sticky);
     m = msg_mark();
     press(B_SEL); tap(B_OCTD); release(B_SEL); wait_ms(200);
-    EXPECT(said_since(m, "NOTHING TO UNDO"), "a second SEL + OCT- on track 2: no NOTHING TO UNDO");
+    EXPECT(said_since(m, "NOTHING TO UNDO"), "a third SEL + OCT- on track 2: no NOTHING TO UNDO");
     m = msg_mark();
     press(B_SEL); tap(B_OCTU); release(B_SEL); wait_ms(200);
-    EXPECT(said_since(m, "REDONE") && seq_count(&Q, 1) == 1 && Q.t[1].pat[Q.t[1].cur].steps == 32, "SEL + OCT+: track 2's take is not back (%d notes)", seq_count(&Q, 1));
+    EXPECT(said_since(m, "REDONE") && seq_count(&Q, 1) == 2 && Q.t[1].pat[Q.t[1].cur].steps == 32, "SEL + OCT+: track 2's take is not back (%d notes)", seq_count(&Q, 1));
+    /* KNOB 1 on a played track: its filter (the value FX + KNOB 4 turns), not the swing */
+    { float f0 = S.trk[1].filt.tgt; int sw0 = Q.swing; turn(ENC_KNOB1, -5);
+      EXPECT(S.trk[1].filt.tgt < f0 && Q.swing == sw0, "KNOB 1 on a played track: filter %.2f -> %.2f, swing %d -> %d", f0, S.trk[1].filt.tgt, sw0, Q.swing);
+      turn(ENC_KNOB1, 5); EXPECT(S.trk[1].filt.tgt == 0.0f, "the filter did not come back to OFF (%.2f)", S.trk[1].filt.tgt); }
     tap(B_OCTD); EXPECT(oct == oct0 - 1, "OCT- alone no longer moves the octave"); tap(B_OCTU);
     select_track(2);                                                 /* a take waiting on track 3: its undo is refused */
     tap(B_REC);

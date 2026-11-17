@@ -838,6 +838,7 @@ COLD static void tile(ui_view *v, int i, const char *text, int style, int flags,
 static int punch_key = -1;                  /* the key whose punch-in is held (FX + key), -1 none */
 static uint32_t loop_said;                                /* (the take display's throttle) */
 static void loop_append(int trk, int note, int vel, int down, uint32_t lat);   /* the capture append, below (t_rec_down) */
+static uint32_t loop_hit;                                 /* when a key last went into a first take (its disc lights) */
 static uint8_t bars_pick[NTRK];                           /* each empty track's BARS for its next take: 0 FREE, or 1, 2, 4, 8 */
 static int punch_of_key(int k) { static const int8_t BLK[27] = { 0, 16, 0, 17, 0, 18, 0, 0, 19, 0, 20, 0, 0, 21, 0, 22, 0, 23, 0, 0, 24, 0, 25, 0, 0, 26, 0 };
                                  return white_of[k] >= 0 ? white_of[k] : BLK[k]; }
@@ -1065,6 +1066,7 @@ COLD static int trk_played(int t)
     for (int i = 0; i < p->n; i++) if (p->ev[i].tick % SEQ_TPS) return 1;
     return 0;
 }
+COLD static int loop_row(int t) { return !seq_count(&Q, t) || trk_played(t); }   /* TRACKS: FILTER and BARS in place of SWING and STEPS */
 COLD static void bars_text(char *b, int t)                 /* an empty track's BARS: FREE, or the bars chosen */
 {
     if (bars_pick[t]) *put_u(b, bars_pick[t]) = 0; else put_s(b, "FREE")[0] = 0;
@@ -1103,7 +1105,27 @@ COLD static void fill_view(ui_view *v)
         v->kind[s] = gb_edesc[S.trk[t].patch.engine < ENG_N ? S.trk[t].patch.engine : 0].name;
         v->mute[s] = q->mute; v->solo[s] = solo[t]; v->rec[s] = (uint8_t)(Q.recording && Q.rec_trk == t);
         v->level[s] = (uint8_t)level_of(t);
-        for (int i = 0; i < 16; i++) {
+        /* the looper: a ring for a track that holds notes, filled as its loop goes round; a lane for played notes; the
+         * take's states. A later take, from REC to its close: the ring fills once a bar (where the bar line is) */
+        const seq_pat *lp = &q->pat[q->cur];
+        uint32_t len = (uint32_t)steps * SEQ_TPS, pos = Q.playing ? (seq_local(&Q, t, Q.tick) - q->origin) % len : 0;
+        uint8_t lf = lp->n ? UL_CIRCLE : 0;
+        v->pie[s] = (uint8_t)(lp->n && Q.playing ? pos * 64u / len : 0); v->head[s] = 255;
+        if (Q.recording && Q.rec_trk == t) lf |= UL_DUB;
+        if (ltake.armed_trk == t && ltake.follow) {
+            lf |= UL_CIRCLE | UL_LANE | (ltake.rec ? UL_REC : UL_WAIT);
+            v->pie[s] = (uint8_t)(Q.tick % SEQ_BAR * 64u / SEQ_BAR);
+            memset(v->cells[s], 0, 16);                    /* (its notes are shown at the close) */
+        } else if (ltake.armed_trk == t && ltake.rec) {
+            lf |= UL_REC | UL_FIRST | ((uint32_t)(now - loop_hit) < 220000u * lsb ? UL_HIT : 0);
+        } else if (trk_played(t)) {
+            lf |= UL_LANE;
+            memset(v->cells[s], 0, 16);
+            for (int i = 0; i < lp->n; i++) if (lp->ev[i].tick < len) { uint32_t c = lp->ev[i].tick * 128u / len; v->cells[s][c >> 3] |= (uint8_t)(1u << (c & 7u)); }
+            if (Q.playing) v->head[s] = (uint8_t)(pos * 128u / len);
+        }
+        v->loop[s] = lf;
+        if (!(lf & UL_LANE)) for (int i = 0; i < 16; i++) {
             int st = first + i; uint8_t f = 0;
             if (st >= steps) f = UC_OUT;
             else {
@@ -1429,7 +1451,8 @@ COLD static void fill_view(ui_view *v)
             }
         } else if (pg == PG_TRACKS) {
             v->page = vis_on ? UI_VIS : UI_TRACKS;
-            knob_n(v, 0, "SWING", Q.swing, Q.swing);
+            if (loop_row(trk)) { bip_text(b, S.trk[trk].filt.tgt); knob(v, 0, "FILTER", b, (int)(50.0f + 50.0f * S.trk[trk].filt.tgt), 0); }   /* (the track's filter, as FX + KNOB 4) */
+            else knob_n(v, 0, "SWING", Q.swing, Q.swing);
             knob_n(v, 1, "LEVEL", level_of(trk), level_of(trk));
             int st = k->pat[k->cur].steps, spb = seq_steps_per_bar(&Q, trk);
             if (!seq_count(&Q, trk)) { bars_text(b, trk); knob(v, 2, "BARS", b, bars_pick[trk] * 100 / 8, 0); }   /* an empty track: its next take's */
@@ -3147,6 +3170,7 @@ static void loop_append(int trk, int note, int vel, int down, uint32_t lat)   /*
     if (ltake.armed_trk < 0) return;
     if (!ltake.follow && !ltake.rec && Q.playing) loop_arm(&ltake, &Q, ltake.armed_trk, ltake.target);   /* the transport started under an armed take: a later take */
     uint8_t was_rec = ltake.rec;
+    if (down) loop_hit = time_ticks();
     loop_note(&ltake, trk, note, vel, down, ltake.follow ? seq_heard(&Q, lat) : loop_us());
     if (!was_rec && ltake.rec) t_rec_down = 0;   /* the capture started: the hold-to-erase timer is off */
 }
@@ -3887,7 +3911,13 @@ COLD static void encoders(void)
             continue;
         }
         if (pg == PG_TRACKS) {
-            if (kn == 0) seq_set_swing(&Q, -1, Q.swing + 2 * da);
+            if (kn == 0 && loop_row(trk)) {                      /* an empty or a played track: its filter (as FX + KNOB 4) */
+                gb_smooth *f = &S.trk[trk].filt;
+                float x = f->tgt + 0.02f * (float)da; x = x < -1.0f ? -1.0f : x > 1.0f ? 1.0f : x;
+                if ((f->tgt < 0.0f && x > 0.0f) || (f->tgt > 0.0f && x < 0.0f) || gb_absf(x) < 0.01f) x = 0.0f;   /* (a stop at OFF) */
+                sm_set(f, x);
+            }
+            else if (kn == 0) seq_set_swing(&Q, -1, Q.swing + 2 * da);
             if (kn == 1) { gb_smooth *l = &S.trk[trk].level; sm_set(l, clamp01(l->tgt + 0.01f * (float)da)); if (Q.t[trk].mute) seq_mute(&Q, trk, 0); }
             if (kn == 2) {
                 int st = Q.t[trk].pat[Q.t[trk].cur].steps, spb = seq_steps_per_bar(&Q, trk);
