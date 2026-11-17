@@ -68,7 +68,7 @@ static void close_test(void)
     printf("close: a 2 s take at set 92 -> 1 bar, 120 BPM, the notes at exact ticks\n");
     reset(92.0f);
     seq_set_len(&S, 1, 32);                       /* track 1 holds a 32-step pattern (A3) */
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused on an empty track");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused on an empty track");
     take_2s();
     int nb = loop_close(&L, &S, 2000000u);
     CHECK(nb == 1, "close returned %d bars", nb);
@@ -90,7 +90,7 @@ static void two_bar_test(void)
     printf("2BAR: the fit says 1 bar / 120, the close gives 2 bars / 240 / 1 step\n");
     reset(92.0f);
     seq_set_div(&S, 0, SEQ_DIV_2BAR);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused on an empty 2BAR track");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused on an empty 2BAR track");
     note_on(0, 60, 100, 0);
     note_off(0, 60, 1000000);
     int nb = loop_close(&L, &S, 2000000u);
@@ -106,21 +106,21 @@ static void boundary_test(void)
 {
     printf("boundaries: 399,999 us is empty, 400,000 us closes, poll at 24 s\n");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(0, 60, 100, 0);
     int nb = loop_close(&L, &S, 399999u);
     CHECK(nb == 0, "399,999 us closed as %d bars", nb);
     CHECK(S.bpm == 92.0f && !S.playing && seq_count(&S, 0) == 0, "399,999 us changed something");
     CHECK(L.armed_trk == -1 && L.rec == 0, "empty take left the take open");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(0, 60, 100, 0);
     nb = loop_close(&L, &S, 400000u);
     CHECK(nb == 1, "400,000 us returned %d", nb);
     CHECK(S.bpm == 92.0f, "400,000 us BPM %.1f (fallback)", S.bpm);
     CHECK(seq_count(&S, 0) == 1, "400,000 us: %d events", seq_count(&S, 0));
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(0, 60, 100, 0);
     CHECK(loop_poll(&L, &S, 24000000u) == 0, "poll closed at exactly 24 s");
     CHECK(L.rec == 1, "poll dropped the take at exactly 24 s");
@@ -133,14 +133,14 @@ static void cancel_test(void)
 {
     printf("cancel: PLAY during capture drops the take, keeps the old pattern\n");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(0, 60, 100, 0);
     note_on(0, 64, 100, 100000);
     loop_cancel(&L);
     CHECK(L.armed_trk == -1 && L.rec == 0 && L.n == 0, "cancel left the take open");
     CHECK(seq_count(&S, 0) == 0 && S.bpm == 92.0f && !S.playing, "cancel changed the project");
     /* a fresh arm works after a cancel, and sees no stale events from the cancelled take */
-    CHECK(loop_arm(&L, &S, 0) == 1, "re-arm refused after cancel");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "re-arm refused after cancel");
     note_on(0, 60, 100, 0);
     int nb = loop_close(&L, &S, 2000000u);
     CHECK(nb == 1 && seq_count(&S, 0) == 1, "re-take after cancel: %d bars, %d events", nb, seq_count(&S, 0));
@@ -150,7 +150,7 @@ static void empty_test(void)
 {
     printf("empty take: no notes, and under 0.4 s, change nothing\n");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     S.batch = 1; S.batch_done = 1;               /* an open batch: the empty exit leaves it untouched */
     int nb = loop_close(&L, &S, 2000000u);
     CHECK(nb == 0, "no-note take returned %d", nb);
@@ -158,7 +158,7 @@ static void empty_test(void)
     CHECK(S.bpm == 92.0f && !S.playing && H.n_undo == 0, "empty take changed something");
     CHECK(L.armed_trk == -1 && L.rec == 0, "empty take left the take open");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(0, 60, 100, 0);
     nb = loop_close(&L, &S, 300000u);
     CHECK(nb == 0 && seq_count(&S, 0) == 0, "short take wrote events");
@@ -170,7 +170,7 @@ static void undo_batch_test(void)
     printf("undo: the close is one step; the batch is restored to its entry value\n");
     /* entry (0, 0): no batch open */
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     take_2s();
     int nb = loop_close(&L, &S, 2000000u);
     CHECK(nb == 1, "close returned %d", nb);
@@ -179,7 +179,7 @@ static void undo_batch_test(void)
     CHECK(seq_undo(&S) && seq_count(&S, 0) == 0, "undo did not remove the take");
     /* entry (0, 0): a following edit increments n_undo separately */
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     take_2s();
     loop_close(&L, &S, 2000000u);
     int u0 = H.n_undo;
@@ -187,7 +187,7 @@ static void undo_batch_test(void)
     CHECK(H.n_undo == u0 + 1, "following edit did not take its own undo step (%d -> %d)", u0, H.n_undo);
     /* entry (1, 1): a following edit joins the restored batch */
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     take_2s();
     S.batch = 1; S.batch_done = 1;
     nb = loop_close(&L, &S, 2000000u);
@@ -199,7 +199,7 @@ static void undo_batch_test(void)
     CHECK(H.n_undo == u0, "following edit took its own undo step (%d -> %d)", u0, H.n_undo);
     /* entry (1, 0): a following edit pushes a snapshot */
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     take_2s();
     S.batch = 1; S.batch_done = 0;
     nb = loop_close(&L, &S, 2000000u);
@@ -215,7 +215,7 @@ static void early_return_test(void)
 {
     printf("early return: a 1-bar div-16 take on a default 16-step pattern is still one undo step\n");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     CHECK(S.t[0].pat[0].steps == 16, "default pattern is not 16 steps");
     note_on(0, 60, 100, 0);
     note_off(0, 60, 1000000);
@@ -231,29 +231,29 @@ static void arm_test(void)
     printf("arm: refused on a content track, moves while armed, only the armed track starts the capture\n");
     reset(92.0f);
     seq_step_toggle(&S, 0, 0, 60, 100);          /* content on track 0 */
-    CHECK(loop_arm(&L, &S, 0) == 0, "arm accepted on a content track");
+    CHECK(loop_arm(&L, &S, 0, 0) == 0, "arm accepted on a content track");
     CHECK(L.armed_trk == -1, "a refused arm opened a take");
     reset(92.0f);
     S.recording = 1;                             /* grid recording in progress */
-    CHECK(loop_arm(&L, &S, 0) == 0, "arm accepted while grid recording");
+    CHECK(loop_arm(&L, &S, 0, 0) == 0, "arm accepted while grid recording");
     S.recording = 0;
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused after grid recording stopped");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused after grid recording stopped");
     /* armed but not capturing: arming a second empty track moves the arm */
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused on empty track 0");
-    CHECK(loop_arm(&L, &S, 1) == 1, "arm-move refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused on empty track 0");
+    CHECK(loop_arm(&L, &S, 1, 0) == 1, "arm-move refused");
     CHECK(L.armed_trk == 1, "the arm did not move to track 1");
     CHECK(L.arm_pat == S.t[1].cur, "arm_pat not updated on the move");
     /* a capture open refuses a move */
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(0, 60, 100, 0);
     CHECK(L.rec == 1 && L.n == 1, "the capture did not start");
-    CHECK(loop_arm(&L, &S, 1) == 0, "arm-move accepted during a capture");
+    CHECK(loop_arm(&L, &S, 1, 0) == 0, "arm-move accepted during a capture");
     CHECK(L.armed_trk == 0, "a refused move changed the arm");
     /* only the armed track's notes start the capture */
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(1, 60, 100, 0);
     CHECK(L.rec == 0 && L.n == 0, "another track's note started the capture");
     note_off(1, 60, 100000);
@@ -267,7 +267,7 @@ static void pattern_changed_test(void)
     printf("pattern changed mid-take: the close cancels, nothing changes\n");
     reset(92.0f);
     seq_set_len(&S, 1, 32);                       /* track 1's length, to prove it is untouched */
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     note_on(0, 60, 100, 0);
     note_off(0, 60, 1000000);
     int u0 = H.n_undo;
@@ -286,116 +286,238 @@ static void pattern_changed_test(void)
 
 /* ---- V1: multi-track arm/close/overdub ---- */
 
-static void later_close_test(void)
+/* ---- later takes (the transport playing): cut out of the bar grid along bar lines, nothing moved ---- */
+#define BAR SEQ_BAR
+static void poll_to(uint32_t t, int *nb) { while (S.tick < t) { seq_advance(&S, 64); int r = loop_poll(&L, &S, 0); if (r && nb) *nb = r; } }
+static void playing_with_track1(float bpm)
 {
-    printf("later close: while playing, a close on track 2 leaves the BPM and track 1 alone\n");
-    reset(120.0f);
-    seq_add(&S, 0, 0, 96, 60, 100);               /* track 1 already has a loop */
-    seq_add(&S, 0, 384, 96, 64, 100);
-    seq_set_len(&S, 0, 16);
+    reset(bpm);
+    seq_add(&S, 0, 0, 96, 60, 100); seq_add(&S, 0, 384, 96, 64, 100); seq_set_len(&S, 0, 16);
     seq_play(&S, 1);
-    run_to(4 * SEQ_BAR);
-    int steps0 = S.t[0].pat[S.t[0].cur].steps, n0 = seq_count(&S, 0);
-    CHECK(loop_arm(&L, &S, 1) == 1, "arm refused on empty track 2 while playing");
-    note_on(1, 67, 100, 0);
-    note_off(1, 67, 1000000);
-    int nb = loop_close(&L, &S, 2000000u);
-    CHECK(nb == 1, "later close returned %d bars", nb);
-    CHECK(S.bpm == 120.0f, "later close changed the BPM to %.1f", S.bpm);
-    CHECK(S.playing, "later close stopped the transport");
-    CHECK(S.t[0].pat[S.t[0].cur].steps == steps0 && seq_count(&S, 0) == n0,
-          "track 1 changed (steps %d, %d events)", S.t[0].pat[S.t[0].cur].steps, seq_count(&S, 0));
-    CHECK(S.t[1].pat[S.t[1].cur].steps == 16, "track 2 is %d steps", S.t[1].pat[S.t[1].cur].steps);
-    CHECK(seq_count(&S, 1) == 1, "track 2 has %d events", seq_count(&S, 1));
 }
-
-static void origin_test(void)
+static void later_take_test(void)
 {
-    printf("origin: set as the adapter does, the first event fires in the next block\n");
-    reset(120.0f);
-    seq_play(&S, 1);
-    run_to(2 * SEQ_BAR);                          /* the transport is running */
-    CHECK(loop_arm(&L, &S, 1) == 1, "arm refused on empty track 2 while playing");
-    note_on(1, 67, 100, 0);
-    note_off(1, 67, 1000000);
-    uint32_t tick = S.tick;                       /* snapshot before the close, as the adapter does */
-    int nb = loop_close(&L, &S, 2000000u);
-    CHECK(nb == 1, "close returned %d bars", nb);
-    S.t[1].origin = seq_local(&S, 1, tick);       /* the adapter's origin write */
+    printf("later take: recording starts on the next bar line, ends on the bar line after REC, nothing moved\n");
+    playing_with_track1(120.0f);
+    run_to(3 * BAR + 700);                        /* REC in the middle of the 4th bar */
+    int steps0 = S.t[0].pat[S.t[0].cur].steps, n0 = seq_count(&S, 0), nb = 0;
+    CHECK(loop_arm(&L, &S, 1, 0) == 1, "arm refused on empty track 2 while playing");
+    CHECK(L.follow && L.start == 4 * BAR, "the start line is %u, not the next bar line %u", L.start, 4 * BAR);
+    CHECK(!L.rec, "recording before the start line");
+    loop_note(&L, 1, 72, 100, 1, 3 * BAR + 900); loop_note(&L, 1, 72, 0, 0, 3 * BAR + 990);   /* played in the wait: heard, not recorded */
+    poll_to(4 * BAR, &nb);
+    CHECK(L.rec && L.n == 0, "at the start line: rec %d, %d notes (want recording, 0 notes)", L.rec, L.n);
+    loop_note(&L, 1, 60, 100, 1, 4 * BAR + 10);   loop_note(&L, 1, 60, 0, 0, 4 * BAR + 210);
+    loop_note(&L, 1, 64, 100, 1, 5 * BAR + 777);  loop_note(&L, 1, 64, 0, 0, 5 * BAR + 900);
+    loop_note(&L, 1, 67, 100, 1, 8 * BAR + 100);  loop_note(&L, 1, 67, 0, 0, 8 * BAR + 300);
+    poll_to(8 * BAR + 800, &nb);                  /* REC in the middle of the 9th bar */
+    CHECK(nb == 0 && L.rec, "the take closed before REC (nb %d)", nb);
+    loop_stop(&L, &S);
+    CHECK(L.closing && L.end == 9 * BAR, "the end line is %u, not %u", L.end, 9 * BAR);
+    poll_to(9 * BAR - 64, &nb);
+    CHECK(nb == 0 && L.rec, "closed before the end line (nb %d)", nb);
+    loop_note(&L, 1, 71, 100, 1, 9 * BAR - 50);   /* still recording between REC and the line */
     nlog = 0;
-    seq_advance(&S, 64);                          /* one 64-frame block */
-    CHECK(ons(1, 67) == 1, "the first event did not fire in the next block (%d note-ons)", ons(1, 67));
+    poll_to(9 * BAR, &nb);
+    CHECK(nb == 5, "the close returned %d bars (want 5: bars 5 to 9)", nb);
+    CHECK(S.bpm == 120.0f && S.playing, "the BPM or the transport changed (%.1f, playing %d)", S.bpm, S.playing);
+    CHECK(S.t[0].pat[S.t[0].cur].steps == steps0 && seq_count(&S, 0) == n0, "track 1 changed");
+    CHECK(S.t[1].pat[S.t[1].cur].steps == 80, "track 2 is %d steps (want 80)", S.t[1].pat[S.t[1].cur].steps);
+    CHECK(seq_count(&S, 1) == 4, "track 2 has %d notes (want 4: the one in the wait is not recorded)", seq_count(&S, 1));
+    uint32_t tick, len;
+    CHECK(find_ev(1, 60, &tick, &len) >= 0 && tick == 10 && len == 200, "note 60 at %u len %u (want 10 / 200, to the tick)", tick, len);
+    CHECK(find_ev(1, 64, &tick, &len) >= 0 && tick == BAR + 777 && len == 123, "note 64 at %u len %u (want %u / 123)", tick, len, BAR + 777);
+    CHECK(find_ev(1, 67, &tick, &len) >= 0 && tick == 4 * BAR + 100, "note 67 at %u (want %u)", tick, 4 * BAR + 100);
+    CHECK(find_ev(1, 71, &tick, &len) >= 0 && tick == 5 * BAR - 50, "note 71 at %u (want %u)", tick, 5 * BAR - 50);
+    CHECK(find_ev(1, 72, &tick, &len) < 0, "the note played in the wait was recorded");
+    CHECK(S.t[1].origin == 9 * BAR, "the loop's beginning is at %u, not on the end line %u", S.t[1].origin, 9 * BAR);
+    /* in phase from then on: note 60 sounds 10 ticks after the 10th bar line, and again 5 bars later, for 16 passes */
+    run_to(9 * BAR + 16 * 5 * BAR + 100);
+    int k = 0, bad = 0;
+    for (int i = 0; i < nlog; i++) if (log_[i].on && log_[i].trk == 1 && log_[i].note == 60) {
+        uint32_t want = 9 * BAR + (uint32_t)k * 5 * BAR + 10;
+        if (log_[i].tick + 2 < want || log_[i].tick > want + 2) bad++;
+        k++;
+    }
+    CHECK(k == 17 && !bad, "note 60 sounded %d times, %d off its place (want 17, 0)", k, bad);
 }
-
-static void div8_test(void)
+static void downbeat_test(void)
 {
-    printf("div 1/8: a take gets steps = bars x 8, events at the right local ticks\n");
-    reset(120.0f);
-    seq_set_div(&S, 0, SEQ_DIV_8);
-    seq_play(&S, 1);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused on an empty 1/8 track");
+    printf("downbeat: a note on the loop's first tick sounds on the first pass\n");
+    playing_with_track1(120.0f);
+    int nb = 0;
+    run_to(BAR + 300);
+    CHECK(loop_arm(&L, &S, 1, 1) == 1, "arm refused");
+    poll_to(2 * BAR, &nb);
+    loop_note(&L, 1, 67, 100, 1, 2 * BAR); loop_note(&L, 1, 67, 0, 0, 2 * BAR + 96);
+    nlog = 0;
+    poll_to(3 * BAR, &nb);                        /* 1 bar chosen: it closes itself on the line */
+    CHECK(nb == 1, "the take did not close itself after the bar chosen (nb %d)", nb);
+    run_to(3 * BAR + 40);
+    CHECK(ons(1, 67) == 1, "the downbeat sounded %d times on the first pass (want 1)", ons(1, 67));
+    run_to(4 * BAR + 40);
+    CHECK(ons(1, 67) == 2, "the downbeat sounded %d times after two passes (want 2)", ons(1, 67));
+}
+static void allowance_test(void)
+{
+    printf("allowance: half a step either side of a bar line counts as on it\n");
+    int nb = 0; uint32_t tick, len;
+    playing_with_track1(120.0f);                  /* arming: a hair after the line starts from that line */
+    run_to(4 * BAR + 30);
+    loop_arm(&L, &S, 1, 0);
+    CHECK(L.start == 4 * BAR, "armed 30 ticks after a line: start %u (want that line, %u)", L.start, 4 * BAR);
+    loop_cancel(&L);
+    run_to(4 * BAR + 60);
+    loop_arm(&L, &S, 1, 0);
+    CHECK(L.start == 5 * BAR, "armed 60 ticks after a line: start %u (want the next, %u)", L.start, 5 * BAR);
+    /* the first note a hair early: recorded, where it was played (just before the loop comes round) */
+    loop_note(&L, 1, 60, 100, 1, 5 * BAR - 60); loop_note(&L, 1, 60, 0, 0, 5 * BAR - 50);
+    CHECK(L.n == 0, "a note 60 ticks before the start line was recorded");
+    loop_note(&L, 1, 62, 100, 1, 5 * BAR - 30); loop_note(&L, 1, 62, 0, 0, 5 * BAR + 40);
+    CHECK(L.n == 1, "a note 30 ticks before the start line was not recorded");
+    poll_to(5 * BAR + 30, &nb);
+    loop_stop(&L, &S);                            /* REC a hair after the start line: at least a bar */
+    CHECK(L.end == 6 * BAR, "REC just after the start line: end %u (want one bar, %u)", L.end, 6 * BAR);
+    poll_to(6 * BAR, &nb);
+    CHECK(nb == 1, "close returned %d bars (want 1)", nb);
+    CHECK(find_ev(1, 62, &tick, &len) >= 0 && tick == BAR - 30, "the early note is at %u (want %u)", tick, BAR - 30);
+    /* ending: a hair after a line ends on that line, at once */
+    playing_with_track1(120.0f);
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 0); nb = 0;
+    poll_to(2 * BAR + 10, &nb); loop_note(&L, 1, 60, 100, 1, 2 * BAR + 5); loop_note(&L, 1, 60, 0, 0, 2 * BAR + 90);
+    poll_to(5 * BAR + 30, &nb);
+    loop_stop(&L, &S);
+    CHECK(L.end == 5 * BAR, "REC 30 ticks after a line: end %u (want that line, %u)", L.end, 5 * BAR);
+    poll_to(5 * BAR + 34, &nb);
+    CHECK(nb == 3, "it did not close at once (nb %d, want 3)", nb);
+    playing_with_track1(120.0f);
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 0); nb = 0;
+    poll_to(2 * BAR + 10, &nb); loop_note(&L, 1, 60, 100, 1, 2 * BAR + 5); loop_note(&L, 1, 60, 0, 0, 2 * BAR + 90);
+    poll_to(5 * BAR + 60, &nb);
+    loop_stop(&L, &S);
+    CHECK(L.end == 6 * BAR, "REC 60 ticks after a line: end %u (want the next, %u)", L.end, 6 * BAR);
+    loop_stop(&L, &S);                            /* a second REC in the wait does nothing */
+    CHECK(L.end == 6 * BAR && L.rec, "a second REC changed the take");
+}
+static void bars_chosen_test(void)
+{
+    printf("bars chosen: 1, 2, 4, 8 close by themselves; FREE runs to 8; REC sooner gives a shorter loop\n");
+    int nb = 0;
+    playing_with_track1(120.0f);
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 4);
+    CHECK(L.end - L.start == 4 * BAR, "4 chosen: %u bars", (L.end - L.start) / BAR);
+    poll_to(2 * BAR + 20, &nb); loop_note(&L, 1, 60, 100, 1, 2 * BAR + 5); loop_note(&L, 1, 60, 0, 0, 2 * BAR + 90);
+    poll_to(6 * BAR - 64, &nb);
+    CHECK(nb == 0, "closed before the 4 bars were up");
+    poll_to(6 * BAR, &nb);
+    CHECK(nb == 4 && S.t[1].pat[S.t[1].cur].steps == 64, "4 chosen: closed %d bars, %d steps", nb, S.t[1].pat[S.t[1].cur].steps);
+    playing_with_track1(120.0f);
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 4); nb = 0;
+    poll_to(2 * BAR + 20, &nb); loop_note(&L, 1, 60, 100, 1, 2 * BAR + 5); loop_note(&L, 1, 60, 0, 0, 2 * BAR + 90);
+    poll_to(3 * BAR + 500, &nb); loop_stop(&L, &S);          /* REC in the 2nd bar of 4 */
+    poll_to(4 * BAR, &nb);
+    CHECK(nb == 2, "REC in the 2nd bar of 4: %d bars (want 2)", nb);
+    playing_with_track1(120.0f);                  /* FREE: left running, it closes itself after 8 bars */
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 0); nb = 0;
+    poll_to(2 * BAR + 20, &nb); loop_note(&L, 1, 60, 100, 1, 2 * BAR + 5); loop_note(&L, 1, 60, 0, 0, 2 * BAR + 90);
+    poll_to(10 * BAR - 64, &nb);
+    CHECK(nb == 0, "FREE closed before 8 bars");
+    poll_to(10 * BAR, &nb);
+    CHECK(nb == 8 && S.t[1].pat[S.t[1].cur].steps == 128, "FREE left running: %d bars, %d steps (want 8, 128)", nb, S.t[1].pat[S.t[1].cur].steps);
+    reset(120.0f); seq_set_div(&S, 0, SEQ_DIV_32);   /* a 1/32 track holds 4 bars */
+    CHECK(loop_max_bars(&S, 0) == 4, "1/32: %d bars at most (want 4)", loop_max_bars(&S, 0));
+    seq_play(&S, 1); run_to(200); loop_arm(&L, &S, 0, 8);
+    CHECK(L.end - L.start == 4 * BAR, "1/32, 8 chosen: %u bars (want 4)", (L.end - L.start) / BAR);
+    loop_cancel(&L);
+    reset(120.0f); seq_set_div(&S, 0, SEQ_DIV_8);    /* 1/8: steps = bars x 8, the ticks halved */
+    seq_play(&S, 1); run_to(200); loop_arm(&L, &S, 0, 1); nb = 0;
+    poll_to(BAR + 10, &nb); loop_note(&L, 0, 64, 100, 1, BAR + 384); loop_note(&L, 0, 64, 0, 0, BAR + 768);
+    poll_to(2 * BAR, &nb);
+    uint32_t tick, len;
+    CHECK(nb == 1 && S.t[0].pat[S.t[0].cur].steps == 8, "1/8: %d bars, %d steps (want 1, 8)", nb, S.t[0].pat[S.t[0].cur].steps);
+    CHECK(find_ev(0, 64, &tick, &len) >= 0 && tick == 192 && len == 192, "1/8: note at %u len %u (want 192 / 192)", tick, len);
+    reset(120.0f); seq_set_div(&S, 0, SEQ_DIV_2BAR); /* 2BAR: an even count */
+    seq_play(&S, 1); run_to(200); loop_arm(&L, &S, 0, 1);
+    CHECK(L.end - L.start == 2 * BAR, "2BAR, 1 chosen: %u bars (want 2)", (L.end - L.start) / BAR);
+}
+static void later_edge_test(void)
+{
+    printf("later take edges: nothing played, the transport stopped, a full loop\n");
+    int nb = 0;
+    playing_with_track1(120.0f);
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 1);
+    poll_to(3 * BAR, &nb);
+    CHECK(nb == 0 && L.armed_trk < 0 && seq_count(&S, 1) == 0, "nothing played: nb %d, armed %d, %d notes", nb, L.armed_trk, seq_count(&S, 1));
+    CHECK(H.n_undo == 0 || H.h[H.n_undo - 1].trk != 1, "an empty later take left an undo step");
+    playing_with_track1(120.0f);
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 0);
+    seq_play(&S, 0);
+    CHECK(loop_poll(&L, &S, 0) == -1 && L.armed_trk < 0, "the transport stopped: the take was not cancelled");
+    playing_with_track1(120.0f);                  /* 130 notes: 128 kept, and told */
+    run_to(BAR + 200); loop_arm(&L, &S, 1, 2); nb = 0;
+    poll_to(2 * BAR + 4, &nb);
+    for (int i = 0; i < 130; i++) { loop_note(&L, 1, 40 + i % 40, 100, 1, 2 * BAR + 10 + (uint32_t)i * 20); loop_note(&L, 1, 40 + i % 40, 0, 0, 2 * BAR + 20 + (uint32_t)i * 20); }
+    poll_to(4 * BAR, &nb);
+    CHECK(nb == 2 && seq_count(&S, 1) == 128 && L.full, "130 notes: %d bars, %d kept, full %d (want 2, 128, 1)", nb, seq_count(&S, 1), L.full);
+    int u = H.n_undo;
+    CHECK(seq_undo(&S) && seq_count(&S, 1) == 0 && H.n_undo == u - 1, "a later take is not one undo step");
+    reset(120.0f); seq_play(&S, 1); run_to(5000);
+    CHECK(seq_heard(&S, 0) == S.tick, "seq_heard without latency is not the tick");
+    CHECK(seq_heard(&S, 441) == S.tick - 8, "seq_heard 441 frames back: %u (want %u, as seq_key counts)", seq_heard(&S, 441), S.tick - 8);
+}
+static void second_close_test(void)
+{
+    printf("second take: while playing, it leaves the BPM\n");
+    reset(92.0f);
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     take_2s();
     int nb = loop_close(&L, &S, 2000000u);
-    CHECK(nb == 1, "close returned %d bars", nb);
-    CHECK(S.bpm == 120.0f, "BPM %.1f", S.bpm);
-    CHECK(S.t[0].pat[S.t[0].cur].steps == 8, "1/8 pattern %d steps (want 8)", S.t[0].pat[S.t[0].cur].steps);
-    uint32_t tick, len;
-    CHECK(find_ev(0, 64, &tick, &len) >= 0 && near_tick(tick, 192) && near_tick(len, 384),
-          "note 64 at tick %u len %u (want 192 / 384)", tick, len);
-    CHECK(find_ev(0, 67, &tick, &len) >= 0 && near_tick(tick, 576),
-          "note 67 at tick %u (want 576)", tick);
+    CHECK(nb == 1 && S.bpm == 120.0f, "first close: %d bars, %.1f BPM", nb, S.bpm);
+    run_to(200);
+    CHECK(loop_arm(&L, &S, 1, 0) == 1 && L.follow, "re-arm refused, or not a later take");
+    nb = 0;
+    poll_to(BAR + 4, &nb); loop_note(&L, 1, 67, 100, 1, BAR + 100); loop_note(&L, 1, 67, 0, 0, BAR + 400);
+    poll_to(BAR + 900, &nb); loop_stop(&L, &S); poll_to(2 * BAR, &nb);
+    CHECK(nb == 1, "second close returned %d bars", nb);
+    CHECK(S.bpm == 120.0f, "second close re-derived the BPM to %.1f", S.bpm);
 }
-
-static void div32_test(void)
+static void first_take_bars_test(void)
 {
-    printf("div 1/32: a playing close at ~6 bars clamps to 4 bars, 128 steps\n");
-    reset(120.0f);
-    seq_set_div(&S, 0, SEQ_DIV_32);
+    printf("first take, bars chosen: the take is that many bars and the tempo is worked out from it\n");
+    static const struct { int target; uint32_t us; int nb; float bpm; } T[] = {
+        { 4, 8000000u, 4, 120.0f }, { 2, 8000000u, 2, 60.0f }, { 8, 8000000u, 8, 240.0f },
+        { 8, 5000000u, 2, 96.0f },                 /* 384 BPM is out of range: the FREE fit (2 bars at 96, nearest the 120 set) */
+        { 0, 8000000u, 4, 120.0f } };
+    for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+        reset(120.0f);
+        CHECK(loop_arm(&L, &S, 0, T[i].target) == 1 && !L.follow, "arm refused");
+        note_on(0, 60, 100, 0); note_off(0, 60, 500000);
+        note_on(0, 64, 100, T[i].us / 2); note_off(0, 64, T[i].us / 2 + 500000);
+        int nb = loop_close(&L, &S, T[i].us);
+        CHECK(nb == T[i].nb && S.bpm == T[i].bpm, "%d chosen, %.1f s: %d bars at %.1f (want %d at %.1f)", T[i].target, T[i].us / 1e6, nb, S.bpm, T[i].nb, T[i].bpm);
+        uint32_t tick = 0, len = 0;
+        CHECK(find_ev(0, 64, &tick, &len) >= 0 && near_tick(tick, (uint32_t)T[i].nb * BAR / 2), "the note halfway is at %u (want %u)", tick, (uint32_t)T[i].nb * BAR / 2);
+    }
+    reset(120.0f);                                /* the transport started under a first take: cancelled, no tempo to derive */
+    loop_arm(&L, &S, 0, 0); note_on(0, 60, 100, 0); note_off(0, 60, 500000);
     seq_play(&S, 1);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused on an empty 1/32 track");
-    note_on(0, 60, 100, 0);
-    note_off(0, 60, 6000000);
-    int nb = loop_close(&L, &S, 12000000u);
-    CHECK(nb == 4, "close returned %d bars (want 4)", nb);
-    CHECK(S.bpm == 120.0f, "BPM %.1f", S.bpm);
-    CHECK(S.t[0].pat[S.t[0].cur].steps == 128, "1/32 pattern %d steps (want 128)", S.t[0].pat[S.t[0].cur].steps);
-    uint32_t tick, len;
-    CHECK(find_ev(0, 60, &tick, &len) >= 0 && tick == 0 && near_tick(len, 6144),
-          "note 60 at tick %u len %u (want 0 / 6144)", tick, len);
-}
-
-static void twobar_follow_test(void)
-{
-    printf("2BAR follow: 6 s at 120 BPM rounds nb 3 -> 4, 2 steps, BPM untouched\n");
-    reset(120.0f);
-    seq_set_div(&S, 0, SEQ_DIV_2BAR);
-    seq_play(&S, 1);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused on an empty 2BAR track");
-    note_on(0, 60, 100, 0);
-    note_off(0, 60, 3000000);
-    int nb = loop_close(&L, &S, 6000000u);
-    CHECK(nb == 4, "close returned %d bars (want 4)", nb);
-    CHECK(S.bpm == 120.0f, "BPM %.1f", S.bpm);
-    CHECK(S.t[0].pat[S.t[0].cur].steps == 2, "2BAR pattern %d steps (want 2)", S.t[0].pat[S.t[0].cur].steps);
-    uint32_t tick, len;
-    CHECK(find_ev(0, 60, &tick, &len) >= 0 && tick == 0 && len == 96,
-          "note 60 at tick %u len %u (want 0 / 96)", tick, len);
+    CHECK(loop_close(&L, &S, 2000000u) == -1 && seq_count(&S, 0) == 0, "a first take closed while playing was not cancelled");
 }
 
 static void retake_test(void)
 {
     printf("re-take: no pre-existing events survive an erase and a new take\n");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     take_2s();
     int nb = loop_close(&L, &S, 2000000u);
     CHECK(nb == 1 && seq_count(&S, 0) == 3, "first take: %d bars, %d events", nb, seq_count(&S, 0));
     seq_clear(&S, 0);                             /* erase the old loop first */
     CHECK(seq_count(&S, 0) == 0, "erase left %d events", seq_count(&S, 0));
-    CHECK(loop_arm(&L, &S, 0) == 1, "re-arm refused on the erased track");
-    note_on(0, 72, 100, 0);
-    note_off(0, 72, 1000000);
-    nb = loop_close(&L, &S, 2000000u);
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "re-arm refused on the erased track");
+    nb = 0;                                       /* playing now: a later take, from the line just passed (tick 0) */
+    loop_note(&L, 0, 72, 100, 1, 0); loop_note(&L, 0, 72, 0, 0, 500);
+    poll_to(900, &nb); loop_stop(&L, &S); poll_to(BAR, &nb);
     CHECK(nb == 1, "second close returned %d bars", nb);
     CHECK(seq_count(&S, 0) == 1, "re-take has %d events (want 1)", seq_count(&S, 0));
     uint32_t tick, len;
@@ -406,28 +528,11 @@ static void retake_test(void)
 
 /* ---- V2: the BPM rule ---- */
 
-static void second_close_test(void)
-{
-    printf("second close: while playing, a later close leaves the BPM\n");
-    reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
-    take_2s();
-    int nb = loop_close(&L, &S, 2000000u);
-    CHECK(nb == 1 && S.bpm == 120.0f, "first close: %d bars, %.1f BPM", nb, S.bpm);
-    /* the transport is playing now; a second take on another track is a follow close */
-    CHECK(loop_arm(&L, &S, 1) == 1, "re-arm refused");
-    note_on(1, 67, 100, 0);
-    note_off(1, 67, 1500000);
-    nb = loop_close(&L, &S, 2000000u);
-    CHECK(nb == 1, "second close returned %d bars", nb);
-    CHECK(S.bpm == 120.0f, "second close re-derived the BPM to %.1f", S.bpm);
-}
-
 static void rederive_after_stop_test(void)
 {
     printf("re-derivation: after a full stop, a new take re-derives the BPM\n");
     reset(92.0f);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "arm refused");
     take_2s();
     int nb = loop_close(&L, &S, 2000000u);
     CHECK(nb == 1 && S.bpm == 120.0f, "first close: %d bars, %.1f BPM", nb, S.bpm);
@@ -435,47 +540,13 @@ static void rederive_after_stop_test(void)
     seq_clear(&S, 0);
     seq_play(&S, 0);                              /* full stop */
     CHECK(!S.playing, "the transport did not stop");
-    CHECK(loop_arm(&L, &S, 0) == 1, "re-arm refused");
+    CHECK(loop_arm(&L, &S, 0, 0) == 1, "re-arm refused");
     note_on(0, 72, 100, 0);
     note_off(0, 72, 2000000);
     nb = loop_close(&L, &S, 4000000u);            /* 4 s at set 120: 2 bars / 120 BPM */
     CHECK(nb == 2, "re-take close returned %d bars (want 2)", nb);
     CHECK(S.bpm == 120.0f, "re-take BPM %.1f (want 120)", S.bpm);
     CHECK(seq_count(&S, 0) == 1, "re-take has %d events", seq_count(&S, 0));
-}
-
-static void bar_rounding_test(void)
-{
-    printf("bar rounding: a take rounds to the nearest bar at the current BPM\n");
-    reset(120.0f);
-    seq_play(&S, 1);
-    CHECK(loop_arm(&L, &S, 0) == 1, "arm refused");
-    note_on(0, 60, 100, 0);
-    note_off(0, 60, 1000000);
-    int nb = loop_close(&L, &S, 2900000u);        /* 2.9 s at 120 BPM: 1.45 bars -> 1 */
-    CHECK(nb == 1, "2.9 s close returned %d bars (want 1)", nb);
-    CHECK(S.bpm == 120.0f, "BPM %.1f", S.bpm);
-    seq_clear(&S, 0);
-    CHECK(loop_arm(&L, &S, 0) == 1, "re-arm refused");
-    note_on(0, 60, 100, 0);
-    note_off(0, 60, 1000000);
-    nb = loop_close(&L, &S, 3100000u);            /* 3.1 s: 1.55 bars -> 2 */
-    CHECK(nb == 2, "3.1 s close returned %d bars (want 2)", nb);
-    CHECK(S.bpm == 120.0f, "BPM %.1f", S.bpm);
-}
-
-static void follow_bars_test(void)
-{
-    printf("follow bars: the shared helper counts what the close counts\n");
-    reset(120.0f);                                 /* 1 bar = 2 s at 120 BPM, div 1/16 */
-    CHECK(loop_follow_bars(&S, 0, 2900000u) == 1, "2.9 s -> %d bars (want 1)", loop_follow_bars(&S, 0, 2900000u));
-    CHECK(loop_follow_bars(&S, 0, 3100000u) == 2, "3.1 s -> %d bars (want 2)", loop_follow_bars(&S, 0, 3100000u));
-    CHECK(loop_follow_bars(&S, 0, 12000000u) == 6, "12 s -> %d bars (want 6)", loop_follow_bars(&S, 0, 12000000u));
-    CHECK(loop_follow_bars(&S, 0, 20000000u) == 8, "20 s -> %d bars (want 8, clamped)", loop_follow_bars(&S, 0, 20000000u));
-    seq_set_div(&S, 0, SEQ_DIV_32);
-    CHECK(loop_follow_bars(&S, 0, 12000000u) == 4, "1/32, 12 s -> %d bars (want 4, div clamp)", loop_follow_bars(&S, 0, 12000000u));
-    seq_set_div(&S, 0, SEQ_DIV_2BAR);
-    CHECK(loop_follow_bars(&S, 0, 6000000u) == 4, "2BAR, 6 s -> %d bars (want 4, odd rounds up)", loop_follow_bars(&S, 0, 6000000u));
 }
 
 int main(void)
@@ -490,16 +561,15 @@ int main(void)
     early_return_test();
     arm_test();
     pattern_changed_test();
-    later_close_test();
-    origin_test();
-    div8_test();
-    div32_test();
-    twobar_follow_test();
+    later_take_test();
+    downbeat_test();
+    allowance_test();
+    bars_chosen_test();
+    later_edge_test();
     retake_test();
     second_close_test();
     rederive_after_stop_test();
-    bar_rounding_test();
-    follow_bars_test();
+    first_take_bars_test();
     printf("loop: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

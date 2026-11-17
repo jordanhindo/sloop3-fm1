@@ -33,6 +33,10 @@ run loop3 loop3 -
 run loop3-reboot reboot $O/loop3/flash.bin
 same loop3 loop3-reboot
 run loop4 loop4 -
+run loop5 loop5 -                          # BARS: FREE / 1 / 2 / 4 / 8, each empty track its own
+run loop5-reboot reboot $O/loop5/flash.bin
+same loop5 loop5-reboot
+run loopwrap loopwrap -                    # a take across the timer's wrap
 run settings settings $O/boot/flash.bin
 run settings-reboot reboot $O/settings/flash.bin
 same settings settings-reboot

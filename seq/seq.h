@@ -166,5 +166,7 @@ void seq_song_set_pat(seq_t *s, int i, int trk, int pat);
 void seq_song_set_count(seq_t *s, int n);
 int seq_song_at(const seq_t *s);
 /* history */
+uint32_t seq_heard(const seq_t *s, uint32_t latency_frames);   /* the tick the player hears now: the output's delay behind the one computed */
+void seq_catch_up(seq_t *s, int trk, uint32_t from);            /* the track's notes from that tick (the sequencer's) to now, played at once: a pattern written behind the playhead */
 int seq_undo(seq_t *s);                                  /* 1 if something was undone */
 int seq_redo(seq_t *s);

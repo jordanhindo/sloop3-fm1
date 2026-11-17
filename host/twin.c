@@ -469,17 +469,22 @@ static void sc_loop(void)                   /* the free-form looper: arm, play, 
     m = msg_mark();
     tap(B_REC); wait_ms(300);
     EXPECT(recording_armed, "REC on track 2: not armed");
-    EXPECT(said_since(m, "REC READY · YOUR NOTE STARTS IT"), "REC on track 2: no REC READY · YOUR NOTE STARTS IT");
-    /* three notes over ~14 s (6 bars at ~102 BPM): the first starts the take */
+    EXPECT(said_since(m, "REC AT THE BAR"), "REC on track 2: no REC AT THE BAR");
+    EXPECT(ltake.follow && !ltake.rec, "REC while playing: not waiting for the bar line (follow %d, rec %d)", ltake.follow, ltake.rec);
+    while (!ltake.rec && ltake.armed_trk >= 0) wait_ms(10);          /* the start line */
+    EXPECT(ltake.rec && Q.tick - ltake.start < 40, "recording did not start on the bar line (%u ticks after it)", Q.tick - ltake.start);
+    /* three notes over ~7 s; FREE on a 1/32 track runs to its 4 bars (~9.4 s at ~102 BPM) and closes itself there */
     uint64_t u0 = tw_ns;
-    midi_send(0x91, 60, 100); wait_ms(2000); midi_send(0x81, 60, 0); wait_ms(3000);
-    midi_send(0x91, 64, 100); wait_ms(2000); midi_send(0x81, 64, 0); wait_ms(3000);
-    shot("loop-capture-2");
-    midi_send(0x91, 67, 100); wait_ms(2000); midi_send(0x81, 67, 0); wait_ms(2000);
-    /* close: REC press */
     char want2[40]; snprintf(want2, sizeof want2, "TAKE: 4 BARS · %d BPM", (int)(Q.bpm + 0.5f));
     m = msg_mark();
-    press(B_REC); wait_ms(50); release(B_REC); wait_ms(300);
+    midi_send(0x91, 60, 100); wait_ms(1000); midi_send(0x81, 60, 0); wait_ms(2000);
+    midi_send(0x91, 64, 100); wait_ms(1000); midi_send(0x81, 64, 0); wait_ms(2000);
+    shot("loop-capture-2");
+    midi_send(0x91, 67, 100); wait_ms(1000); midi_send(0x81, 67, 0);
+    EXPECT(ltake.rec, "the take closed before its 4 bars");
+    while (ltake.armed_trk >= 0) wait_ms(10);                        /* the end line */
+    EXPECT(Q.tick % SEQ_BAR < 40, "the take did not close on a bar line (%u ticks after one)", Q.tick % SEQ_BAR);
+    wait_ms(300);
     printf("[%8.3f]    second take: %.1f s -> %s (Q.bpm %.1f)\n", tw_s(), (double)(tw_ns - u0) / 1e9, want2, Q.bpm);
     EXPECT(said_since(m, want2), "no \"%s\" after the second close", want2);
     EXPECT(Q.playing, "the second close stopped the transport");
@@ -565,12 +570,20 @@ static void sc_loop2(void)                  /* V2: the BPM rule — a loaded 120
     m = msg_mark();
     tap(B_REC); wait_ms(300);
     EXPECT(recording_armed, "REC on track 2: not armed");
-    EXPECT(said_since(m, "REC READY · YOUR NOTE STARTS IT"), "REC on track 2: no REC READY · YOUR NOTE STARTS IT");
+    EXPECT(said_since(m, "REC AT THE BAR"), "REC on track 2: no REC AT THE BAR");
+    while (!ltake.rec && ltake.armed_trk >= 0) wait_ms(10);          /* the start line */
     uint64_t u0 = tw_ns;
-    midi_send(0x91, 60, 100); wait_ms(800); midi_send(0x81, 60, 0); wait_ms(800);
-    midi_send(0x91, 64, 100); wait_ms(800); midi_send(0x81, 64, 0);
+    uint32_t on1 = Q.tick;
+    midi_send(0x91, 60, 100); wait_ms(500); midi_send(0x81, 60, 0); wait_ms(300);
+    midi_send(0x91, 64, 100); wait_ms(500); midi_send(0x81, 64, 0);
     m = msg_mark();
-    press(B_REC); wait_ms(50); release(B_REC); wait_ms(300);
+    press(B_REC); wait_ms(50); release(B_REC);                       /* in the first bar (2 s at 120): it ends on its line */
+    EXPECT(said_since(m, "CLOSING AT THE BAR") && ltake.rec, "REC in the bar: no CLOSING AT THE BAR, or closed at once");
+    while (ltake.armed_trk >= 0) wait_ms(10);
+    EXPECT(Q.tick % SEQ_BAR < 40, "the take did not close on a bar line (%u ticks after one)", Q.tick % SEQ_BAR);
+    { seq_pat *p = &Q.t[1].pat[Q.t[1].cur];                           /* the first note where it was heard: no scaling */
+      EXPECT(p->n >= 1 && p->ev[0].tick < 60 && (on1 % SEQ_BAR) < 40, "the first note is at tick %u (played %u ticks after the line)", p->n ? p->ev[0].tick : 0, on1 % SEQ_BAR); }
+    wait_ms(300);
     printf("[%8.3f]    free take at ~100 BPM: %.1f s (Q.bpm %.1f)\n", tw_s(), (double)(tw_ns - u0) / 1e9, Q.bpm);
     EXPECT(said_since(m, "TAKE: 1 BAR · 120 BPM"), "no TAKE: 1 BAR · 120 BPM after the close");
     EXPECT(Q.bpm == 120.0f, "the free take re-derived the BPM to %.1f", Q.bpm);
@@ -644,6 +657,94 @@ static void sc_loop3(void)                  /* V2 C3: a loaded 120 BPM project, 
     save_and_wait();
     check_project_roundtrip("after the C3 take");
 }
+static void sc_loop5(void)                  /* BARS: each empty track's FREE / 1 / 2 / 4 / 8, a first take of the bars chosen, a later one that closes itself */
+{
+    boot_wait();
+    uint32_t m = msg_mark();
+    press(B_HOME); tapkey(white_key[HK_NEW]); release(B_HOME); wait_ms(300);
+    press(B_HOME); tapkey(white_key[HK_NEW]); release(B_HOME); wait_ms(300);
+    EXPECT(said_since(m, "NEW PROJECT"), "no NEW PROJECT");
+    Q.bpm = 120.0f;
+    EXPECT(sticky == PG_TRACKS, "not on TRACKS (%d)", sticky);
+    /* track 1, empty: KNOB 3 is BARS, FREE at first */
+    EXPECT(bars_pick[0] == 0, "track 1 does not start on FREE (%d)", bars_pick[0]);
+    turn(ENC_KNOB3, 1); turn(ENC_KNOB3, 1); turn(ENC_KNOB3, 1);
+    EXPECT(bars_pick[0] == 4, "three clicks from FREE: %d (want 4)", bars_pick[0]);
+    EXPECT(Q.t[0].pat[Q.t[0].cur].steps == 16 && HIST.n_undo == 0, "BARS on an empty track changed the project (%d steps, %d undo)", Q.t[0].pat[Q.t[0].cur].steps, HIST.n_undo);
+    shot("bars-empty");
+    /* a first take of 8 s with 4 chosen: 4 bars at 120 (the FREE fit would also say so; 2 chosen below is the proof) */
+    m = msg_mark();
+    tap(B_REC); wait_ms(200);
+    EXPECT(said_since(m, "REC READY · PLAY FREELY") && ltake.target == 4, "REC: not armed for 4 bars (target %d)", ltake.target);
+    shot("bars-rec-screen");
+    turn(ENC_KNOB2, -1);                         /* the REC screen's BARS: 2 now, the take's too */
+    EXPECT(bars_pick[0] == 2 && ltake.target == 2, "the REC screen's BARS: %d, take %d (want 2, 2)", bars_pick[0], ltake.target);
+    for (int i = 0; i < 4; i++) { wait_ms(i * 37); midi_send(0x90, 60 + i, 100); wait_ms(1000); midi_send(0x80, 60 + i, 0); wait_ms(1000 - i * 37); }   /* (by hand: off the steps) */
+    m = msg_mark();
+    press(B_REC); wait_ms(50); release(B_REC); wait_ms(300);
+    EXPECT(said_since(m, "TAKE: 2 BARS · 60 BPM"), "8 s with 2 chosen: not 2 bars at 60 (%.1f BPM, %d steps)", Q.bpm, Q.t[0].pat[Q.t[0].cur].steps);
+    EXPECT(Q.playing && Q.t[0].pat[Q.t[0].cur].steps == 32 && seq_count(&Q, 0) == 4, "the first take: playing %d, %d steps, %d notes", Q.playing, Q.t[0].pat[Q.t[0].cur].steps, seq_count(&Q, 0));
+    EXPECT(Q.t[0].quant == 0 && Q.t[1].quant == 100, "a take does not play as played (QUANT %d; an untouched track's %d)", Q.t[0].quant, Q.t[1].quant);
+    /* track 1 is a played track now: KNOB 3 is its length, 1 2 4 8 bars, no note moved */
+    uint16_t t1 = Q.t[0].pat[Q.t[0].cur].ev[1].tick;
+    turn(ENC_KNOB3, 1);
+    EXPECT(Q.t[0].pat[Q.t[0].cur].steps == 64, "BARS up from 2: %d steps (want 64)", Q.t[0].pat[Q.t[0].cur].steps);
+    turn(ENC_KNOB3, 1); turn(ENC_KNOB3, 1);
+    EXPECT(Q.t[0].pat[Q.t[0].cur].steps == 128, "BARS up to the top: %d steps (want 128)", Q.t[0].pat[Q.t[0].cur].steps);
+    turn(ENC_KNOB3, -1); turn(ENC_KNOB3, -1); turn(ENC_KNOB3, -1); turn(ENC_KNOB3, -1);
+    EXPECT(Q.t[0].pat[Q.t[0].cur].steps == 16, "BARS down to the bottom: %d steps (want 16)", Q.t[0].pat[Q.t[0].cur].steps);
+    turn(ENC_KNOB3, 1);
+    EXPECT(Q.t[0].pat[Q.t[0].cur].steps == 32 && seq_count(&Q, 0) == 4 && Q.t[0].pat[Q.t[0].cur].ev[1].tick == t1, "BARS back to 2: a note moved or went");
+    Q.bpm = 120.0f;                               /* (faster, for the rest) */
+    /* each empty track keeps its own choice */
+    select_track(1); turn(ENC_KNOB3, 2);
+    select_track(2);
+    EXPECT(bars_pick[1] == 2 && bars_pick[2] == 0, "tracks 2 and 3: %d, %d (want 2, FREE)", bars_pick[1], bars_pick[2]);
+    select_track(1);
+    /* a later take with 2 chosen: from the next bar line, closed by itself two bars on */
+    m = msg_mark();
+    tap(B_REC);
+    EXPECT(said_since(m, "REC AT THE BAR") && ltake.follow, "REC while playing: no REC AT THE BAR");
+    shot("bars-waiting");
+    while (!ltake.rec && ltake.armed_trk >= 0) wait_ms(10);
+    uint32_t start = ltake.start;
+    EXPECT(start % SEQ_BAR == 0 && Q.tick - start < 40, "recording did not start on a bar line");
+    midi_send(0x91, 60, 100); wait_ms(400); midi_send(0x81, 60, 0);
+    m = msg_mark();
+    while (ltake.armed_trk >= 0) wait_ms(10);
+    wait_ms(100);
+    EXPECT(said_since(m, "TAKE: 2 BARS · 120 BPM"), "2 chosen: no TAKE: 2 BARS · 120 BPM");
+    EXPECT(Q.t[1].pat[Q.t[1].cur].steps == 32 && Q.t[1].origin == start + 2 * SEQ_BAR, "track 2: %d steps, its beginning %u ticks off the end line", Q.t[1].pat[Q.t[1].cur].steps, Q.t[1].origin - (start + 2 * SEQ_BAR));
+    EXPECT(!Q.recording, "the take's close left recording on");
+    shot("bars-two-loops");
+    tap(B_PLAY); wait_ms(300);
+    save_and_wait();
+    check_project_roundtrip("after the BARS takes");
+}
+static void sc_loopwrap(void)               /* a free take across the 60 MHz timer's wrap (71.58 s): its length must stay right */
+{
+    boot_wait();
+    uint32_t m = msg_mark();
+    press(B_HOME); tapkey(white_key[HK_NEW]); release(B_HOME); wait_ms(300);
+    press(B_HOME); tapkey(white_key[HK_NEW]); release(B_HOME); wait_ms(300);
+    EXPECT(said_since(m, "NEW PROJECT"), "no NEW PROJECT");
+    Q.bpm = 120.0f;
+    while (tw_s() < 69.5) wait_ms(100);                       /* the wrap is at 71.58 s */
+    m = msg_mark();
+    tap(B_REC); wait_ms(200);
+    EXPECT(said_since(m, "REC READY · PLAY FREELY"), "no REC READY · PLAY FREELY");
+    double t0 = tw_s();
+    for (int i = 0; i < 4; i++) { midi_send(0x90, 60 + i, 100); wait_ms(500); midi_send(0x80, 60 + i, 0); wait_ms(500); }
+    printf("[%8.3f]    the take ran %.2f s to %.2f s (the timer wrapped at 71.58 s)\n", tw_s(), t0, tw_s());
+    EXPECT(ltake.rec, "the take closed by itself across the timer's wrap");
+    m = msg_mark();
+    press(B_REC); wait_ms(50); release(B_REC); wait_ms(300);
+    EXPECT(said_since(m, "TAKE: 2 BARS · 120 BPM"), "a 4 s take at 120 is not 2 bars at 120 (BPM %.1f, %d steps)", Q.bpm, Q.t[0].pat[Q.t[0].cur].steps);
+    { seq_pat *p = &Q.t[0].pat[Q.t[0].cur];
+      EXPECT(p->n == 4, "%d notes, not 4", p->n);
+      for (int i = 0; i < p->n && i < 4; i++) { int want = i * 768, d = (int)p->ev[i].tick - want; EXPECT(d > -40 && d < 40, "note %d at tick %u, not ~%d", i, p->ev[i].tick, want); } }
+    tap(B_PLAY); wait_ms(300);
+}
 static void sc_loop4(void)                  /* V0: START:CLICK ignored on the loop path; the adapter messages */
 {
     boot_wait();
@@ -673,13 +774,13 @@ static void sc_loop4(void)                  /* V0: START:CLICK ignored on the lo
     EXPECT(said_since(m, "TAKE: 1 BAR"), "no TAKE after the START:CLICK close");
     EXPECT(Q.playing, "the START:CLICK take closed but the transport did not start");
     EXPECT(Q.bpm != 92.0f, "the START:CLICK take did not derive a BPM (%.1f)", Q.bpm);
-    /* 2. playing, START:CLICK set: the arm says YOUR NOTE STARTS IT, and
+    /* 2. playing, START:CLICK set: the arm says REC AT THE BAR, and
      * PLAY still cancels the take instead of toggling the transport */
     select_track(1);
     m = msg_mark();
     tap(B_REC); wait_ms(300);
     EXPECT(recording_armed, "REC on track 2: not armed");
-    EXPECT(said_since(m, "REC READY · YOUR NOTE STARTS IT"), "REC on track 2 with START:CLICK: no REC READY · YOUR NOTE STARTS IT");
+    EXPECT(said_since(m, "REC AT THE BAR"), "REC on track 2 with START:CLICK: no REC AT THE BAR");
     EXPECT(!said_since(m, "COUNT-IN"), "REC on track 2 with START:CLICK: COUNT-IN leaked onto the loop path");
     midi_send(0x91, 60, 100); wait_ms(500); midi_send(0x81, 60, 0); wait_ms(200);
     m = msg_mark();
@@ -2405,7 +2506,7 @@ static void sc_sounds(void)
 }
 static const struct { const char *name; void (*fn)(void); } SC[] = {
     { "boot", sc_boot }, { "reboot", sc_reboot }, { "sounds", sc_sounds }, { "ukit", sc_ukit }, { "pages", sc_pages }, { "record", sc_record },
-    { "loop", sc_loop }, { "loop2", sc_loop2 }, { "loop3", sc_loop3 }, { "loop4", sc_loop4 }, { "powercut", sc_powercut }, { "aftercut", sc_after_cut }, { "sample", sc_sample }, { "editor", sc_editor },
+    { "loop", sc_loop }, { "loop2", sc_loop2 }, { "loop3", sc_loop3 }, { "loop4", sc_loop4 }, { "loopwrap", sc_loopwrap }, { "loop5", sc_loop5 }, { "powercut", sc_powercut }, { "aftercut", sc_after_cut }, { "sample", sc_sample }, { "editor", sc_editor },
     { "monkey", sc_monkey }, { "import", sc_import }, { "midi", sc_midi }, { "rescue", sc_rescue }, { "calib", sc_calib }, { "settings", sc_settings }, { "play", sc_play }, { "levels", sc_levels }, { "mixui", sc_mixui }, { "fx", sc_fx }, { "editor2", sc_editor2 }, { "serve", sc_serve }, { "vis", sc_vis }, { "banksave", sc_banksave }, { "punch", sc_punch }, { "film", sc_film }, { "inst", sc_inst }, { "film2", sc_film2 }, { "bigproj", sc_bigproj }, { "bigcut", sc_bigcut }, { "punch2", sc_punch2 }, { "crumb", sc_crumb }, { "nan", sc_nan } };
 static void (*tw_sc)(void);
 static void *tw_script(void *arg)

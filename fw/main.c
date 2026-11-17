@@ -837,7 +837,8 @@ COLD static void tile(ui_view *v, int i, const char *text, int style, int flags,
 }
 static int punch_key = -1;                  /* the key whose punch-in is held (FX + key), -1 none */
 static uint32_t loop_said;                                /* (the take display's throttle) */
-static void loop_append(int trk, int note, int vel, int down);   /* the capture append, below (t_rec_down) */
+static void loop_append(int trk, int note, int vel, int down, uint32_t lat);   /* the capture append, below (t_rec_down) */
+static uint8_t bars_pick[NTRK];                           /* each empty track's BARS for its next take: 0 FREE, or 1, 2, 4, 8 */
 static int punch_of_key(int k) { static const int8_t BLK[27] = { 0, 16, 0, 17, 0, 18, 0, 0, 19, 0, 20, 0, 0, 21, 0, 22, 0, 23, 0, 0, 24, 0, 25, 0, 0, 26, 0 };
                                  return white_of[k] >= 0 ? white_of[k] : BLK[k]; }
 COLD static void bip_text(char *b, float x)               /* a one-knob filter: LP 42, OFF, HP 30 */
@@ -1056,6 +1057,18 @@ COLD static void batt_poll(void)
     int p = batt_of(batt_raw);
     if (batt_pct < 0 || p > batt_pct + 1 || p < batt_pct - 1) batt_pct = (int8_t)p;
 }
+/* a played track: a note of its pattern is off the steps (a take, or a pattern recorded by hand). Worked out from the
+ * notes each time: nothing is stored, so it is the same after a save, a load, an undo */
+COLD static int trk_played(int t)
+{
+    const seq_pat *p = &Q.t[t].pat[Q.t[t].cur];
+    for (int i = 0; i < p->n; i++) if (p->ev[i].tick % SEQ_TPS) return 1;
+    return 0;
+}
+COLD static void bars_text(char *b, int t)                 /* an empty track's BARS: FREE, or the bars chosen */
+{
+    if (bars_pick[t]) *put_u(b, bars_pick[t]) = 0; else put_s(b, "FREE")[0] = 0;
+}
 COLD static void fill_view(ui_view *v)
 {
     if (splash_on) { v->page = UI_SPLASH; return; }
@@ -1147,11 +1160,12 @@ COLD static void fill_view(ui_view *v)
         else put_s(v->page_name, "REC READY")[0] = 0;
         int empty = project_empty(), spb = seq_steps_per_bar(&Q, trk), st = k->pat[k->cur].steps;
         knob(v, 0, "MODE", empty ? (rec_mode ? "TEMPO" : "FREE") : "TEMPO", empty ? rec_mode * 100 : 100, 0);
-        if (empty && !rec_mode) knob(v, 1, "BARS", "FREE", -1, 0);
+        if (ltake.armed_trk >= 0) { bars_text(b, ltake.armed_trk); knob(v, 1, "BARS", b, bars_pick[ltake.armed_trk] * 100 / 8, 0); }   /* a take: the bars chosen */
+        else if (empty && !rec_mode) knob(v, 1, "BARS", "FREE", -1, 0);
         else { if (st % spb == 0) p = put_u(b, (uint32_t)(st / spb)); else { p = put_u(b, (uint32_t)st); *p++ = 'P'; } *p = 0;
                knob(v, 1, "BARS", b, st * 100 / SEQ_MAXSTEPS, 0); }
         knob(v, 2, "START", rec_count ? "CLICK" : "NOTE", rec_count * 100, 0);
-        int qv = k->quant; if (qv == 100) put_s(b, "ON")[0] = 0; else if (!qv) put_s(b, "OFF")[0] = 0; else { *put_s(put_u(b, (uint32_t)qv), "%") = 0; }
+        int qv = ltake.armed_trk >= 0 ? 0 : k->quant; if (qv == 100) put_s(b, "ON")[0] = 0; else if (!qv) put_s(b, "OFF")[0] = 0; else { *put_s(put_u(b, (uint32_t)qv), "%") = 0; }
         knob(v, 3, "QUANT", b, qv, 0);
     } else if (layer < 0 && pg == PG_SONG2) {              /* SONG 2/2: the song's entries (as SLOOP's SONG screen) */
         v->page = UI_SONG; v->title_col = RGB(80, 220, 255);
@@ -1417,7 +1431,10 @@ COLD static void fill_view(ui_view *v)
             v->page = vis_on ? UI_VIS : UI_TRACKS;
             knob_n(v, 0, "SWING", Q.swing, Q.swing);
             knob_n(v, 1, "LEVEL", level_of(trk), level_of(trk));
-            knob_n(v, 2, "STEPS", k->pat[k->cur].steps, k->pat[k->cur].steps * 100 / SEQ_MAXSTEPS);
+            int st = k->pat[k->cur].steps, spb = seq_steps_per_bar(&Q, trk);
+            if (!seq_count(&Q, trk)) { bars_text(b, trk); knob(v, 2, "BARS", b, bars_pick[trk] * 100 / 8, 0); }   /* an empty track: its next take's */
+            else if (trk_played(trk) && st % spb == 0) knob_n(v, 2, "BARS", st / spb, st * 100 / SEQ_MAXSTEPS);       /* a played one: its length */
+            else knob_n(v, 2, "STEPS", st, st * 100 / SEQ_MAXSTEPS);
             int pan = (int)(S.trk[trk].pan.tgt * 100.0f + 0.5f) - 50; *put_i(b, pan) = 0; knob(v, 3, "PAN", b, pan + 50, 0);
         } else if (pg == PG_FX) {                              /* the sends, as SLOOP's: DST CHO DLY REV */
             v->page = UI_FX;
@@ -1733,6 +1750,7 @@ COLD static void load_project(int w)
     (void)w;
     if (sbuf_held()) { say_bad("EDITOR BUSY"); return; }
     if (ltake.armed_trk >= 0) { loop_cancel(&ltake); recording_armed = 0; }   /* a load cancels any open take */
+    memset(bars_pick, 0, sizeof bars_pick);                                    /* (and every empty track is FREE again) */
     uint32_t n = 0, crc = 0;
     int have = flash_ok && store_proj_find(&proj_at, &n, &crc) == 0;
     proj = 0; safe_hold = 0; proj_used = have ? 1u : 0u;
@@ -1920,7 +1938,7 @@ static void key_off(int k, uint32_t lat)
     if (key_nn[k] && arp_on(key_trk[k])) { for (int i = 0; i < key_nn[k]; i++) arp_remove(key_trk[k], key_notes[k][i]); key_nn[k] = 0; return; }
     for (int i = 0; i < key_nn[k]; i++) {
         play_off(o, key_trk[k], key_notes[k][i]);
-        loop_append(key_trk[k], key_notes[k][i], 0, 0);
+        loop_append(key_trk[k], key_notes[k][i], 0, 0, lat);
         if (Q.recording && key_trk[k] == Q.rec_trk) seq_key(&Q, key_notes[k][i], 0, 0, lat);
     }
     key_nn[k] = 0;
@@ -1943,7 +1961,7 @@ static void key_on(int k, int t, const uint8_t *n, int nn, float vel, uint32_t l
             continue;
         }
         play_on(o, t, n[i], vel);
-        loop_append(t, n[i], key_vel[k], 1);
+        loop_append(t, n[i], key_vel[k], 1, lat);
         if (Q.recording && t == Q.rec_trk) seq_key(&Q, n[i], key_vel[k], 1, lat);
     }
 }
@@ -2060,7 +2078,7 @@ COLD static void mh_end(int i, uint32_t lat)
     mh[i].on = 0;
     if (mh[i].arp) { arp_remove(t, n); return; }
     play_off(GB_OWNER(OWN_MIDI, mh[i].ch), t, n);
-    loop_append(t, n, 0, 0);
+    loop_append(t, n, 0, 0, lat);
     if (Q.recording && t == Q.rec_trk) seq_key(&Q, n, 0, 0, lat);
 }
 COLD static void midi_all_off(int ch)                     /* ch < 0: every channel */
@@ -2098,7 +2116,7 @@ COLD static void midi_note(int ch, int t, int n, int vel)
     }
     if (mh[slot].arp) { arp_add(t, n, vel); return; }
     play_on(GB_OWNER(OWN_MIDI, ch), t, n, (float)vel * (1.0f / 127.0f));
-    loop_append(t, n, vel, 1);
+    loop_append(t, n, vel, 1, lat);
     if (Q.recording && t == Q.rec_trk) seq_key(&Q, n, vel, 1, lat);
 }
 COLD static void edited(int t) { if (preset_of[t] >= 0) preset_of[t] = -preset_of[t] - 2; }
@@ -3120,43 +3138,56 @@ COLD static void notes_advance(void)                              /* NOTES: ever
 }
 static uint32_t t_rec_down; static uint8_t rec_hint;
 /* the take's adapter helpers (the module is seq/loop.c; these say what it returns, and keep the UI flag in sync) */
-static void loop_append(int trk, int note, int vel, int down)   /* a note on/off, into the open take (RAM: roll calls it) */
+/* a first take's clock, in µs: the 60 MHz timer wraps every 71.6 s, so the ticks are subtracted before they are divided
+ * (anchored anew until the capture starts: a take is at most 24 s) */
+static uint32_t loop_t0;
+static uint32_t loop_us(void) { uint32_t t = time_ticks(); if (!ltake.rec) loop_t0 = t; return (uint32_t)(t - loop_t0) / lsb; }
+static void loop_append(int trk, int note, int vel, int down, uint32_t lat)   /* a note on/off, into the open take (RAM: roll calls it) */
 {
     if (ltake.armed_trk < 0) return;
+    if (!ltake.follow && !ltake.rec && Q.playing) loop_arm(&ltake, &Q, ltake.armed_trk, ltake.target);   /* the transport started under an armed take: a later take */
     uint8_t was_rec = ltake.rec;
-    loop_note(&ltake, trk, note, vel, down, (uint32_t)(time_ticks() / lsb));
+    loop_note(&ltake, trk, note, vel, down, ltake.follow ? seq_heard(&Q, lat) : loop_us());
     if (!was_rec && ltake.rec) t_rec_down = 0;   /* the capture started: the hold-to-erase timer is off */
 }
-COLD static void loop_closed(int nb, int trk, int was_playing, uint32_t tick)   /* say what a close returned */
+COLD static void loop_closed(int nb, int t)   /* say what a close returned */
 {
     recording_armed = 0;
     if (nb < 0) { say("TAKE CANCELLED"); return; }
     if (nb == 0) { say_bad("EMPTY TAKE"); return; }
-    if (was_playing) Q.t[trk].origin = seq_local(&Q, trk, tick);
+    Q.t[t].quant = 0;                            /* a take plays as it was played (a project's tracks start on QUANT 100; STEPS: QUANT pulls it in again) */
+    if (ltake.full) { say_imp("LOOP FULL: 128 NOTES"); return; }
     char b[32], *p = put_s(b, "TAKE: "); p = put_u(p, (uint32_t)nb); p = put_s(p, nb > 1 ? " BARS · " : " BAR · ");
     p = put_u(p, (uint32_t)(Q.bpm + 0.5f)); p = put_s(p, " BPM"); *p = 0; say(b);
 }
-COLD static void loop_close_take(void)   /* REC press: close the take and say what happened */
+COLD static void loop_say(void)                                      /* a first take: the seconds, and the loop it would make now; a later take: where it is */
 {
-    int trk = ltake.armed_trk;
-    int was_playing = Q.playing;
-    uint32_t tick = Q.tick;
-    int nb = loop_close(&ltake, &Q, (uint32_t)(time_ticks() / lsb));
-    loop_closed(nb, trk, was_playing, tick);
-}
-COLD static void loop_say(void)                                      /* the seconds, and the loop it would make now */
-{
-    uint32_t d = (uint32_t)(time_ticks() / lsb) - ltake.t0_us;
-    int nb; float bpm;
-    if (!Q.playing) loop_fit(d > 400000u ? d : 400000u, Q.bpm, &nb, &bpm);
-    else {   /* a follow-take: the bars at the current BPM, as the close counts them */
-        nb = loop_follow_bars(&Q, ltake.armed_trk, d);
-        bpm = Q.bpm;
+    char b[40], *p;
+    if (ltake.follow) {
+        if (!ltake.rec) { say("REC AT THE BAR"); return; }
+        if (ltake.closing) { say("CLOSING AT THE BAR"); return; }
+        p = put_s(b, "TAKE · BAR "); p = put_u(p, (Q.tick - ltake.start) / SEQ_BAR + 1u);
+        if (ltake.target) { p = put_s(p, " OF "); p = put_u(p, (ltake.end - ltake.start) / SEQ_BAR); }
+        *p = 0; say(b); return;
     }
-    char b[40], *p = put_s(b, "TAKE ");
+    uint32_t d = loop_us() - ltake.t0_us;
+    int nb; float bpm;
+    loop_fit(d > 400000u ? d : 400000u, Q.bpm, &nb, &bpm);
+    if (ltake.target) { float t = (float)ltake.target * 240000000.0f / (float)(d > 400000u ? d : 400000u); if (t >= 40.0f && t <= 250.0f) { nb = ltake.target; bpm = t; } }
+    p = put_s(b, "TAKE ");
     p = put_u(p, d / 1000000u); *p++ = '.'; p = put_u(p, d / 100000u % 10u); p = put_s(p, "s · ");
     p = put_u(p, (uint32_t)nb); p = put_s(p, " BARS "); p = put_u(p, (uint32_t)(bpm + 0.5f)); *p = 0;
     say(b);
+}
+/* BARS, an empty track's choice for its next take: FREE, 1, 2, 4, 8 (as many as the track's DIV holds) */
+COLD static void bars_turn(int t, int d)
+{
+    static const uint8_t B[5] = { 0, 1, 2, 4, 8 };
+    int i = 0; while (i < 4 && B[i] != bars_pick[t]) i++;
+    i += d; i = i < 0 ? 0 : i > 4 ? 4 : i;
+    while (B[i] > loop_max_bars(&Q, t)) i--;
+    bars_pick[t] = B[i];
+    if (ltake.armed_trk == t && !ltake.rec) loop_arm(&ltake, &Q, t, B[i]);   /* armed, not yet recording: the take's too */
 }
 COLD static void open_page(int b)
 {
@@ -3279,7 +3310,11 @@ COLD static void buttons(void)
             break;
         case BTN_REC:                                    /* (3.3.6: tapped, it acts when let go; held 2 s, it only erases) */
             t_rec_down = time_ticks() | 1u; rec_hint = 0;
-            if (ltake.rec) { loop_close_take(); t_rec_down = 0; }
+            if (ltake.rec) {                     /* a later take ends on the bar line; a first take now */
+                if (ltake.follow) { loop_stop(&ltake, &Q); say("CLOSING AT THE BAR"); }
+                else { int t = ltake.armed_trk; loop_closed(loop_close(&ltake, &Q, loop_us()), t); }
+                t_rec_down = 0;
+            }
             else if (countin) { countin = 0; recording_armed = 0; say("REC OFF"); t_rec_down = 0; }
             break;
         case BTN_ENV: case BTN_LFO: open_page(b); break;
@@ -3295,16 +3330,16 @@ COLD static void buttons(void)
         if (ltake.rec) { /* capturing: nothing (the take closes on REC press) */ }
         else if (ltake.armed_trk >= 0) {                  /* armed but not capturing */
             if (trk == ltake.armed_trk) { loop_cancel(&ltake); recording_armed = 0; say("REC OFF"); }
-            else if (loop_arm(&ltake, &Q, trk)) say(Q.playing ? "REC READY · YOUR NOTE STARTS IT" : "REC READY · PLAY FREELY");
+            else if (loop_arm(&ltake, &Q, trk, bars_pick[trk])) say(Q.playing ? "REC AT THE BAR" : "REC READY · PLAY FREELY");
             else { loop_cancel(&ltake); recording_armed = 0; say("REC OFF"); }   /* a content track: disarm only */
         }
         else if (Q.recording) seq_record(&Q, 0, trk);
         else if (Q.playing) {                             /* playing, no take open */
-            if (loop_arm(&ltake, &Q, trk)) { recording_armed = 1; say("REC READY · YOUR NOTE STARTS IT"); }
+            if (loop_arm(&ltake, &Q, trk, bars_pick[trk])) { recording_armed = 1; say("REC AT THE BAR"); }
             else seq_record(&Q, 1, trk);
         }
         else if (recording_armed) { recording_armed = 0; say("REC OFF"); }
-        else if (loop_arm(&ltake, &Q, trk)) { recording_armed = 1; say("REC READY · PLAY FREELY"); }
+        else if (loop_arm(&ltake, &Q, trk, bars_pick[trk])) { recording_armed = 1; say("REC READY · PLAY FREELY"); }
         else { recording_armed = 1; say(rec_count ? "REC READY · PLAY: COUNT-IN" : "REC READY · YOUR NOTE STARTS IT"); }
     }
     if (t_rec_down && !rec_hint && (uint32_t)(time_ticks() - t_rec_down) > 500000u * lsb) { rec_hint = 1; say("HOLD REC: ERASE THE TRACK"); }
@@ -3624,7 +3659,8 @@ COLD static void encoders(void)
             if (e == ENC_SELECT) tempo(Q.bpm + (float)da);
             if (e == ENC_PRESETS) choose_preset(d);
             if (kn == 0 && project_empty()) { rec_mode = (uint8_t)(d > 0); say(rec_mode ? "AT THE TEMPO SET (SELECT)" : "FREE TAKE: THE TEMPO FOLLOWS YOU"); }
-            if (kn == 1 && ltake.armed_trk < 0 && !(project_empty() && !rec_mode)) {   /* the loop: 1, 2, 4, 8 bars (inert while a take is open) */
+            if (kn == 1 && ltake.armed_trk >= 0) bars_turn(ltake.armed_trk, d);   /* a take armed: FREE, 1, 2, 4, 8 */
+            if (kn == 1 && ltake.armed_trk < 0 && !(project_empty() && !rec_mode)) {   /* the loop: 1, 2, 4, 8 bars */
                 int spb = seq_steps_per_bar(&Q, trk), bars = k->pat[k->cur].steps / spb;
                 static const int B[4] = { 1, 2, 4, 8 }; int i = 0; while (i < 3 && B[i] < bars) i++;   /* (the first >= now) */
                 i = d > 0 ? (B[i] > bars ? i : i + 1) : i - 1;
@@ -3632,7 +3668,8 @@ COLD static void encoders(void)
                 if (B[i] * spb <= SEQ_MAXSTEPS) { seq_set_len(&Q, trk, B[i] * spb); rec_bars = (uint8_t)(B[i] < 4 ? B[i] : 4); page = 0; }
             }
             if (kn == 2) { rec_count = (uint8_t)(d > 0); say(rec_count ? "PLAY: A BAR OF CLICKS, THEN REC" : "YOUR FIRST NOTE STARTS IT"); }
-            if (kn == 3) { k->quant = (uint8_t)(d > 0 ? 100 : 0); say(k->quant ? "QUANT ON: ON THE STEPS" : "QUANT OFF: AS PLAYED"); }
+            if (kn == 3 && ltake.armed_trk >= 0) say("A TAKE IS AS PLAYED");
+            else if (kn == 3) { k->quant = (uint8_t)(d > 0 ? 100 : 0); say(k->quant ? "QUANT ON: ON THE STEPS" : "QUANT OFF: AS PLAYED"); }
             continue;
         }
         if ((L & (1u << BTN_FX)) || (!L && sticky == PG_MASTER)) {  /* the master bus, the track's filter; SELECT the fade */
@@ -3841,7 +3878,16 @@ COLD static void encoders(void)
         if (pg == PG_TRACKS) {
             if (kn == 0) seq_set_swing(&Q, -1, Q.swing + 2 * da);
             if (kn == 1) { gb_smooth *l = &S.trk[trk].level; sm_set(l, clamp01(l->tgt + 0.01f * (float)da)); if (Q.t[trk].mute) seq_mute(&Q, trk, 0); }
-            if (kn == 2) seq_set_len(&Q, trk, Q.t[trk].pat[Q.t[trk].cur].steps + da);
+            if (kn == 2) {
+                int st = Q.t[trk].pat[Q.t[trk].cur].steps, spb = seq_steps_per_bar(&Q, trk);
+                if (!seq_count(&Q, trk)) bars_turn(trk, d);          /* an empty track: FREE, 1, 2, 4, 8 for its next take */
+                else if (trk_played(trk) && st % spb == 0) {         /* a played one: 1, 2, 4, 8 bars (no note moves: SLOOP's length) */
+                    int nb = st / spb, to = nb;
+                    if (d > 0) { to = 1; while (to <= nb) to *= 2; } else { to = 8; while (to >= nb && to > 1) to /= 2; }
+                    if (to <= loop_max_bars(&Q, trk) && to != nb) seq_set_len(&Q, trk, to * spb);
+                }
+                else seq_set_len(&Q, trk, st + da);
+            }
             if (kn == 3) { gb_smooth *pn = &S.trk[trk].pan; sm_set(pn, clamp01(pn->tgt + 0.01f * (float)da)); }
             if (e == ENC_PRESETS) choose_preset(d);
             continue;
@@ -3985,12 +4031,9 @@ COLD __attribute__((noinline)) static void ui_round(void)
     }
     if (chain_on && Q.song_play) { chain_on = 0; Q.switch_now = 0; }
     uint32_t now = time_ticks();
-    if (ltake.rec) {                                    /* the take: what it would make; closed after 24 s */
-        int trk = ltake.armed_trk;
-        int was_playing = Q.playing;
-        uint32_t tick = Q.tick;
-        int nb = loop_poll(&ltake, &Q, (uint32_t)(now / lsb));
-        if (nb != 0) loop_closed(nb, trk, was_playing, tick);
+    if (ltake.armed_trk >= 0 && (ltake.rec || ltake.follow)) {   /* the take: a first one closed after 24 s; a later one starts and ends on its bar lines */
+        int t = ltake.armed_trk, nb = loop_poll(&ltake, &Q, loop_us());
+        if (nb != 0) loop_closed(nb, t);
         else if ((uint32_t)(now - loop_said) > 400000u * lsb) { loop_said = now; loop_say(); }
     }
     if (save_soon && !saving && (uint32_t)(now - t_save_soon) > 1600000u * lsb) { save_soon = 0; save_project(1); }   /* (SAVE + a key) */

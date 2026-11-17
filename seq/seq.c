@@ -797,12 +797,26 @@ void seq_advance_by(seq_t *s, uint64_t inc)
     if (s->fill_bar && seq_bar(s) + 1u > s->fill_bar) s->fill_bar = 0;   /* that bar is over */
 }
 
+void seq_catch_up(seq_t *s, int trk, uint32_t from)
+{
+    seq_track *k = &s->t[trk];
+    uint32_t a = local_of(k, from), b = local_of(k, s->tick), len = plen(k);
+    if (!s->playing || (int32_t)(b - a) <= 0) return;
+    if (b - a > len) a = b - len;
+    play_range(s, trk, a, b);
+}
+
 /* ---------------------------------------------------------------- live recording */
 void seq_record(seq_t *s, int on, int trk)
 {
     if (on && !s->recording) { s->rec_trk = trk; edit(s, trk, s->t[trk].cur); }   /* the whole take: one undo */
     s->recording = on;
     if (!on) memset(s->held, 0, sizeof s->held);
+}
+uint32_t seq_heard(const seq_t *s, uint32_t latency_frames)
+{
+    uint32_t lat = (uint32_t)((float)latency_frames * tick_per_frame(s) + 0.5f);
+    return s->tick > lat ? s->tick - lat : 0;
 }
 void seq_key(seq_t *s, int note, int vel, int down, uint32_t latency_frames)
 {
