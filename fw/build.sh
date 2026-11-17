@@ -11,7 +11,7 @@ done
 # the interface and the projects: small rather than fast (they run between audio blocks, with time to spare); the
 # master bus too (its loops run once a block, on the mix: not per voice); the hardware's drivers
 for f in engine/drumkits.c engine/fm6_patches.c engine/slice.c hal/fm1/irq.c hal/fm1/board.c hal/fm1/cpu1.c hal/fm1/adc.c hal/fm1/panel.c hal/fm1/flash.c hal/fm1/usb.c hal/fm1/uart.c hal/fm1/sys.c \
-         engine/master.c seq/seq.c app/store.c app/harmony.c app/arp.c app/midi.c app/psound.c fw/main.c; do
+         engine/master.c seq/seq.c seq/loop.c app/store.c app/harmony.c app/arp.c app/midi.c app/psound.c fw/main.c; do
   "$TC/clang" $(echo "$CF" | sed 's/-O2/-Os/') -c $f -o $O/o/$(basename $f .c).o
 done
 # what runs seldom, or once a screen: the smallest (3.1.6: the room for the visualiser)

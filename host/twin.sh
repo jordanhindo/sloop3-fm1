@@ -26,6 +26,13 @@ run pages pages -
 run record record -
 run record-reboot reboot $O/record/flash.bin
 same record record-reboot
+run loop loop -
+run loop-reboot reboot $O/loop/flash.bin
+same loop loop-reboot
+run loop3 loop3 -
+run loop3-reboot reboot $O/loop3/flash.bin
+same loop3 loop3-reboot
+run loop4 loop4 -
 run settings settings $O/boot/flash.bin
 run settings-reboot reboot $O/settings/flash.bin
 same settings settings-reboot

@@ -55,6 +55,7 @@
 #include "../engine/slice.h"
 #include "../engine/fm6.h"
 #include "../seq/seq.h"
+#include "../seq/loop.h"
 #include "../hal/fm1/flash.h"
 #include "../app/store.h"
 #include "../app/project.h"
@@ -89,6 +90,7 @@ static gb_sound S __attribute__((section(".lowbss")));   /* (snd_init clears it)
 static gb_bus busA __attribute__((section(".bootbss"))), busB __attribute__((section(".bootbss")));
 static int32_t abuf[2 * HALF_FRAMES * 2] __attribute__((aligned(32), section(".bootbss")));
 static seq_t Q __attribute__((section(".lowbss")));
+static loop_t ltake __attribute__((section(".lowbss")));   /* the open free take (seq/loop.c) */
 static seq_hist HIST __attribute__((section(".lowbss")));         /* (seq_init clears what is read) */
 static int16_t pmem[GB_PUNCH_MEM] __attribute__((section(".lowbss")));   /* the master bus's lines (master_init clears) */
 static float base[NTRK][GB_NPARAM];          /* each sound's own values (a step's locks change the live ones) */
@@ -564,6 +566,7 @@ COLD static void preset_extras(int t, int np);
 COLD static void new_project(int with_loop)
 {
     seq_init(&Q, rate_hz, 92.0f, &HIST);
+    loop_init(&ltake);
     Q.note_on = sq_on; Q.note_off = sq_off; Q.locks = sq_locks;
     for (int t = 0; t < NTRK; t++) Q.t[t].quant = 100;   /* (3.3.7) a take on the steps, as SLOOP 2.8 recorded (QUANT OFF: as played) */
     static const float LVL[NTRK] = { 0.45f, 0.45f, 0.4f, 0.85f, 0.3f };   /* (the sounds' own levels: presets.c) */
@@ -833,7 +836,8 @@ COLD static void tile(ui_view *v, int i, const char *text, int style, int flags,
     t->text[j] = 0; t->style = (uint8_t)style; t->flags = (uint8_t)flags; t->col = col;
 }
 static int punch_key = -1;                  /* the key whose punch-in is held (FX + key), -1 none */
-static int ft_on;                           /* (a free take under way: below) */
+static uint32_t loop_said;                                /* (the take display's throttle) */
+static void loop_append(int trk, int note, int vel, int down);   /* the capture append, below (t_rec_down) */
 static int punch_of_key(int k) { static const int8_t BLK[27] = { 0, 16, 0, 17, 0, 18, 0, 0, 19, 0, 20, 0, 0, 21, 0, 22, 0, 23, 0, 0, 24, 0, 25, 0, 0, 26, 0 };
                                  return white_of[k] >= 0 ? white_of[k] : BLK[k]; }
 COLD static void bip_text(char *b, float x)               /* a one-knob filter: LP 42, OFF, HP 30 */
@@ -925,7 +929,7 @@ COLD static void ne_sheet_do(void)                              /* OCT+ tapped i
         ne_follow(at); ne_row = 3; say("COPIED · KNOB 2 MOVES IT");
     } else if (ne_row == 5) { seq_ev_del(&Q, trk, sel); if (ne_sub > 0) ne_sub--; ne_sheet = 0; say("NOTE DELETED"); }
 }
-COLD static int notes_on(void) { return sticky == PG_NOTES && !is_drum(trk) && hold_step < 0 && !Q.recording && !recording_armed && !ft_on && !countin; }
+COLD static int notes_on(void) { return sticky == PG_NOTES && !is_drum(trk) && hold_step < 0 && !Q.recording && !recording_armed && !countin; }
 COLD static int force_of(int vel, int acc) { return acc ? 4 : vel < 50 ? 0 : vel < 85 ? 1 : vel < 115 ? 2 : 3; }
 static const char *const FORCE[5] = { "GHOST", "SOFT", "NORM", "HARD", "ACC" };
 /* ---------------------------------------------------------------- HOME: the menu's sections, the calibration */
@@ -1066,7 +1070,7 @@ COLD static void fill_view(ui_view *v)
     v->playing = (uint8_t)Q.playing; v->recording = (uint8_t)Q.recording; v->armed = (uint8_t)recording_armed;
     /* the status: REC, the song, the pattern and the one waiting for the bar */
     const seq_track *k = &Q.t[trk];
-    if (ft_on) { put_s(v->status, "TAKE")[0] = 0; v->status_col = RGB(255, 80, 80); }
+    if (ltake.armed_trk >= 0) { put_s(v->status, "TAKE")[0] = 0; v->status_col = RGB(255, 80, 80); }
     else if (Q.recording) { put_s(v->status, "REC")[0] = 0; v->status_col = RGB(255, 80, 80); }
     else if (Q.song_rec) { put_s(v->status, "SONG REC")[0] = 0; v->status_col = RGB(255, 80, 80); }
     else if (Q.song_play && Q.playing) { p = put_s(v->status, "S "); p = put_u(p, seq_song_bar(&Q) + 1u); *p++ = '/'; p = put_u(p, Q.song_len); *p = 0; v->status_col = RGB(80, 220, 255); }
@@ -1116,7 +1120,7 @@ COLD static void fill_view(ui_view *v)
                 (L & (1u << BTN_EDIT)) ? BTN_EDIT : (L & (1u << BTN_SEL)) ? BTN_SEL : (L & (1u << BTN_ARP)) ? BTN_ARP :
                 (L & (1u << BTN_FX)) ? BTN_FX : -1;
     int pg = sticky, sel_page = 0;
-    int rec_screen = (recording_armed || countin) && !Q.playing && !ft_on && layer < 0;   /* REC armed: its screen */
+    int rec_screen = (recording_armed || countin) && !Q.playing && !ltake.rec && layer < 0;   /* REC armed: its screen */
     if ((pg == PG_DSOUND || pg == PG_KIT) && !is_drum(trk)) pg = PG_OSC;   /* (a synth track: its own pages) */
     if (layer < 0 && pg == PG_STEPS) layer = BTN_SEQ;                 /* (these pages are tiles too) */
     if (layer < 0 && pg == PG_SONG) layer = BTN_SAVE;
@@ -1728,6 +1732,7 @@ COLD static void load_project(int w)
 {
     (void)w;
     if (sbuf_held()) { say_bad("EDITOR BUSY"); return; }
+    if (ltake.armed_trk >= 0) { loop_cancel(&ltake); recording_armed = 0; }   /* a load cancels any open take */
     uint32_t n = 0, crc = 0;
     int have = flash_ok && store_proj_find(&proj_at, &n, &crc) == 0;
     proj = 0; safe_hold = 0; proj_used = have ? 1u : 0u;
@@ -1821,54 +1826,9 @@ static uint8_t key_notes[27][5], key_nn[27], key_vel[27];
 static int8_t key_trk[27];
 static uint8_t last_chord[NTRK][5], last_chord_n[NTRK] = { 1, 1, 1, 1, 1 };
 static struct { uint8_t on; uint32_t next; } roll[27];      /* ARP + a key: it repeats on the grid */
-/* the free take (REC on an empty project, then play freely): the notes as played, in microseconds from the first;
+/* the free take (REC on an empty track, then play freely): the notes as played, in microseconds from the first;
  * REC on the "1" after the last bar closes it: 1, 2 or 4 bars at the tempo nearest the one set (kept within 3 %) */
-#define FT_MAX 256
-static struct { uint32_t on, off; uint8_t note, vel, trk, open; } ft_ev[FT_MAX] __attribute__((section(".lowbss")));   /* (written before read) */
-static int ft_on, ft_n;
-static uint32_t ft_t0, ft_said;
-static uint32_t ft_us(void) { return (uint32_t)(time_ticks() - ft_t0) / lsb; }   /* since the take began (< 72 s) */
 static int project_empty(void) { for (int t = 0; t < NTRK; t++) if (Q.t[t].pat[Q.t[t].cur].n) return 0; return 1; }
-COLD static void ft_fit(uint32_t d, int *nb, float *bpm)
-{
-    static const int NB[3] = { 1, 2, 4 };
-    float best = 1e9f;
-    *nb = 1; *bpm = Q.bpm;
-    for (int i = 0; i < 3; i++) {
-        float b = (float)NB[i] * 4.0f * 60.0e6f / (float)d;
-        if (b < 40.0f || b > 250.0f) continue;
-        float r = b > Q.bpm ? b / Q.bpm : Q.bpm / b;
-        if (r < best) { best = r; *nb = NB[i]; *bpm = b; }
-    }
-    if (best < 1.03f) *bpm = Q.bpm;                              /* near enough: the tempo set */
-    else *bpm = (float)(int)(*bpm + 0.5f);
-}
-COLD static void ft_close(void)
-{
-    uint32_t d = ft_us();
-    ft_on = 0; recording_armed = 0;
-    if (!ft_n || d < 400000u) { say_bad("EMPTY TAKE"); return; }
-    int nb; float bpm; ft_fit(d, &nb, &bpm);
-    seq_set_bpm(&Q, bpm);
-    for (int t = 0; t < NTRK; t++) seq_set_len(&Q, t, nb * 16);
-    float P = (float)(nb * SEQ_BAR), k = P / (float)d;
-    for (int i = 0; i < ft_n; i++) {
-        uint32_t off = ft_ev[i].open ? d : ft_ev[i].off;
-        seq_add(&Q, ft_ev[i].trk, (uint32_t)((float)ft_ev[i].on * k + 0.5f), (uint32_t)((float)(off - ft_ev[i].on) * k + 0.5f), ft_ev[i].note, ft_ev[i].vel);
-    }
-    seq_play(&Q, 1);
-    char b[32], *p = put_s(b, "TAKE: "); p = put_u(p, (uint32_t)nb); p = put_s(p, nb > 1 ? " BARS · " : " BAR · ");
-    p = put_u(p, (uint32_t)(Q.bpm + 0.5f)); p = put_s(p, " BPM"); *p = 0; say(b);
-}
-COLD static void ft_say(void)                                      /* the seconds, and the loop it would make now */
-{
-    uint32_t d = ft_us();
-    int nb; float bpm; ft_fit(d > 400000u ? d : 400000u, &nb, &bpm);
-    char b[40], *p = put_s(b, "TAKE ");
-    p = put_u(p, d / 1000000u); *p++ = '.'; p = put_u(p, d / 100000u % 10u); p = put_s(p, "s · ");
-    p = put_u(p, (uint32_t)nb); p = put_s(p, " BARS "); p = put_u(p, (uint32_t)(bpm + 0.5f)); *p = 0;
-    say(b);
-}
 static uint32_t roll_clock;                                   /* (ticks, while stopped) */
 static void arp_release(void)                               /* what it plays now, ended */
 {
@@ -1960,7 +1920,7 @@ static void key_off(int k, uint32_t lat)
     if (key_nn[k] && arp_on(key_trk[k])) { for (int i = 0; i < key_nn[k]; i++) arp_remove(key_trk[k], key_notes[k][i]); key_nn[k] = 0; return; }
     for (int i = 0; i < key_nn[k]; i++) {
         play_off(o, key_trk[k], key_notes[k][i]);
-        if (ft_on) for (int j = ft_n - 1; j >= 0; j--) if (ft_ev[j].open && ft_ev[j].trk == key_trk[k] && ft_ev[j].note == key_notes[k][i]) { ft_ev[j].open = 0; ft_ev[j].off = ft_us(); break; }
+        loop_append(key_trk[k], key_notes[k][i], 0, 0);
         if (Q.recording && key_trk[k] == Q.rec_trk) seq_key(&Q, key_notes[k][i], 0, 0, lat);
     }
     key_nn[k] = 0;
@@ -1983,7 +1943,7 @@ static void key_on(int k, int t, const uint8_t *n, int nn, float vel, uint32_t l
             continue;
         }
         play_on(o, t, n[i], vel);
-        if (ft_on && ft_n < FT_MAX) { ft_ev[ft_n].on = ft_us(); ft_ev[ft_n].note = n[i]; ft_ev[ft_n].vel = key_vel[k]; ft_ev[ft_n].trk = (uint8_t)t; ft_ev[ft_n].open = 1; ft_n++; }
+        loop_append(t, n[i], key_vel[k], 1);
         if (Q.recording && t == Q.rec_trk) seq_key(&Q, n[i], key_vel[k], 1, lat);
     }
 }
@@ -2022,7 +1982,7 @@ COLD static void transport(int on)                       /* PLAY, and the clock 
     if (on) {
         if (Q.playing) return;
         seq_play(&Q, 1);
-        if (recording_armed) { seq_record(&Q, 1, trk); recording_armed = 0; }
+        if (recording_armed && ltake.armed_trk < 0) { seq_record(&Q, 1, trk); recording_armed = 0; }   /* (a take open stays a take: no grid recording) */
         mclk_start(&MK);                             /* (following a clock: from its next pulse, the downbeat) */
     } else {
         if (!Q.playing) return;
@@ -2100,7 +2060,7 @@ COLD static void mh_end(int i, uint32_t lat)
     mh[i].on = 0;
     if (mh[i].arp) { arp_remove(t, n); return; }
     play_off(GB_OWNER(OWN_MIDI, mh[i].ch), t, n);
-    if (ft_on) for (int j = ft_n - 1; j >= 0; j--) if (ft_ev[j].open && ft_ev[j].trk == t && ft_ev[j].note == n) { ft_ev[j].open = 0; ft_ev[j].off = ft_us(); break; }
+    loop_append(t, n, 0, 0);
     if (Q.recording && t == Q.rec_trk) seq_key(&Q, n, 0, 0, lat);
 }
 COLD static void midi_all_off(int ch)                     /* ch < 0: every channel */
@@ -2121,8 +2081,8 @@ COLD static void midi_note(int ch, int t, int n, int vel)
     int slot = -1; for (int i = 0; i < MH; i++) if (!mh[i].on) { slot = i; break; }
     if (slot < 0) return;
     if (recording_armed && !Q.playing && !countin) {  /* armed: the first note starts it, as a key does */
-        if (project_empty() && !rec_mode) { if (!ft_on) { ft_on = 1; ft_n = 0; ft_t0 = time_ticks(); ft_said = 0; } }
-        else if (!rec_count) { record_now(t); lat = 0; }
+        if (ltake.armed_trk < 0 && !rec_count) { record_now(t); lat = 0; }   /* grid arm: no take open */
+        /* a take open: nothing here — the note is captured at the append site below */
     }
     mh[slot].on = 1; mh[slot].ch = (uint8_t)ch; mh[slot].note = (uint8_t)n; mh[slot].trk = (uint8_t)t; mh[slot].sus = 0;
     mh[slot].arp = (uint8_t)arp_on(t);
@@ -2138,7 +2098,7 @@ COLD static void midi_note(int ch, int t, int n, int vel)
     }
     if (mh[slot].arp) { arp_add(t, n, vel); return; }
     play_on(GB_OWNER(OWN_MIDI, ch), t, n, (float)vel * (1.0f / 127.0f));
-    if (ft_on && ft_n < FT_MAX) { ft_ev[ft_n].on = ft_us(); ft_ev[ft_n].note = (uint8_t)n; ft_ev[ft_n].vel = (uint8_t)vel; ft_ev[ft_n].trk = (uint8_t)t; ft_ev[ft_n].open = 1; ft_n++; }
+    loop_append(t, n, vel, 1);
     if (Q.recording && t == Q.rec_trk) seq_key(&Q, n, vel, 1, lat);
 }
 COLD static void edited(int t) { if (preset_of[t] >= 0) preset_of[t] = -preset_of[t] - 2; }
@@ -2278,7 +2238,7 @@ COLD static void midi_in(const midi_msg *m, uint32_t now)
         } else if (m->st == 0xFA || m->st == 0xFB) {      /* START: from the top; CONTINUE: on (or from the top) */
             if (m->st == 0xFA && Q.playing) transport(0);
             if (Q.playing) mclk_start(&MK); else ext_start = 1;
-        } else if (m->st == 0xFC) { ext_start = 0; transport(0); }
+        } else if (m->st == 0xFC) { ext_start = 0; if (ltake.armed_trk >= 0) { loop_cancel(&ltake); recording_armed = 0; } transport(0); }
         return;
     }
     if (m->st >= 0xF0) return;
@@ -2722,7 +2682,12 @@ COLD static void ed_request(void)
                 else if (b == 6) seq_mute(&Q, a, c != 0); else if (b == 7) solo[a] = (uint8_t)(c != 0);
                 else if (b == 8 && !is_drum(a)) { gb_patch_set(&k->patch, SP_DIST, c); base[a][SP_DIST] = k->patch.p[SP_DIST]; }
             } break;
-        case 5: if (a < 2) transport(a); else transport(!Q.playing); break;                              /* PLAY */
+        case 5:   /* PLAY: a = 0 stop (cancel the take), a = 1 start (preserve it as a follow-take), a >= 2 toggle (cancel the take, no toggle) */
+            if (a == 0) { if (ltake.armed_trk >= 0) { loop_cancel(&ltake); recording_armed = 0; } transport(0); }
+            else if (a == 1) transport(1);
+            else if (ltake.armed_trk >= 0) { loop_cancel(&ltake); recording_armed = 0; }
+            else transport(!Q.playing);   /* no take open: toggle as today (the editor's PLAY is a = 2) */
+            break;
         case 6: if (b < SEQ_NPAT) seq_queue(&Q, a < NTRK ? a : -1, b); break;                            /* a pattern, next */
         case 7: if (a < 27) { mfx_key = a; snd_punch(&S, punch_of_key(a)); } else { mfx_key = -1; if (punch_key < 0) snd_punch(&S, -1); } break;
         case 8: ed_mst = a < 127 ? a : -1; break;                                                         /* the master */
@@ -2903,7 +2868,7 @@ COLD static void leds(void)
     }
     uint32_t beat_ph = Q.tick % (4 * SEQ_TPS);
     led_(BTN_PLAY, Q.playing ? beat_ph < SEQ_TPS : 0);
-    led_(BTN_REC, Q.recording || (ft_on && (bl & 1u)) || (!ft_on && recording_armed && ((bl >> 2) & 1u)));
+    led_(BTN_REC, Q.recording || (ltake.rec && (bl & 1u)) || (!ltake.rec && recording_armed && ((bl >> 2) & 1u)));
     led_(BTN_OCT_DOWN, oct < 0); led_(BTN_OCT_UP, oct > 0);
     for (int b = 2; b < 12; b++) led_(b, ((locked >> b) & 1u) && ((bl >> 1) & 1u));   /* a locked layer blinks */
     /* HOME > LIGHTS: for playing in the dark, every button glows, the keys too as KEYS says, at the LIGHTS level (the
@@ -3136,8 +3101,8 @@ COLD static void keys(void)
         if (is_drum(trk)) { if (held_btn & (1u << BTN_OCT_DOWN)) vel = 0.35f; else if (held_btn & (1u << BTN_OCT_UP)) vel = 1.0f; }
         uint32_t lat = latency_frames();
         if (recording_armed && !Q.playing && !countin && !(L & ~(1u << BTN_ARP))) {   /* armed: the first note starts it */
-            if (project_empty() && !rec_mode) { if (!ft_on) { ft_on = 1; ft_n = 0; ft_t0 = time_ticks(); ft_said = 0; } }
-            else if (!rec_count) { record_now(trk); lat = 0; }   /* (this note: step 1; COUNT-IN: notes only sound) */
+            if (ltake.armed_trk < 0 && !rec_count) { record_now(trk); lat = 0; }   /* grid arm: no take open (this note: step 1; COUNT-IN: notes only sound) */
+            /* a take open: nothing here — the note is captured at the append site in key_on */
         }
         key_on(k, trk, nts, nn, vel, lat);
         if (L & (1u << BTN_ARP)) {                           /* ROLL: again on the grid while held */
@@ -3154,6 +3119,45 @@ COLD static void notes_advance(void)                              /* NOTES: ever
     int st = Q.t[trk].pat[Q.t[trk].cur].steps; ne_step = (ne_step + 1) % (st > 0 ? st : 1); ne_sub = 0;
 }
 static uint32_t t_rec_down; static uint8_t rec_hint;
+/* the take's adapter helpers (the module is seq/loop.c; these say what it returns, and keep the UI flag in sync) */
+static void loop_append(int trk, int note, int vel, int down)   /* a note on/off, into the open take (RAM: roll calls it) */
+{
+    if (ltake.armed_trk < 0) return;
+    uint8_t was_rec = ltake.rec;
+    loop_note(&ltake, trk, note, vel, down, (uint32_t)(time_ticks() / lsb));
+    if (!was_rec && ltake.rec) t_rec_down = 0;   /* the capture started: the hold-to-erase timer is off */
+}
+COLD static void loop_closed(int nb, int trk, int was_playing, uint32_t tick)   /* say what a close returned */
+{
+    recording_armed = 0;
+    if (nb < 0) { say("TAKE CANCELLED"); return; }
+    if (nb == 0) { say_bad("EMPTY TAKE"); return; }
+    if (was_playing) Q.t[trk].origin = seq_local(&Q, trk, tick);
+    char b[32], *p = put_s(b, "TAKE: "); p = put_u(p, (uint32_t)nb); p = put_s(p, nb > 1 ? " BARS · " : " BAR · ");
+    p = put_u(p, (uint32_t)(Q.bpm + 0.5f)); p = put_s(p, " BPM"); *p = 0; say(b);
+}
+COLD static void loop_close_take(void)   /* REC press: close the take and say what happened */
+{
+    int trk = ltake.armed_trk;
+    int was_playing = Q.playing;
+    uint32_t tick = Q.tick;
+    int nb = loop_close(&ltake, &Q, (uint32_t)(time_ticks() / lsb));
+    loop_closed(nb, trk, was_playing, tick);
+}
+COLD static void loop_say(void)                                      /* the seconds, and the loop it would make now */
+{
+    uint32_t d = (uint32_t)(time_ticks() / lsb) - ltake.t0_us;
+    int nb; float bpm;
+    if (!Q.playing) loop_fit(d > 400000u ? d : 400000u, Q.bpm, &nb, &bpm);
+    else {   /* a follow-take: the bars at the current BPM, as the close counts them */
+        nb = loop_follow_bars(&Q, ltake.armed_trk, d);
+        bpm = Q.bpm;
+    }
+    char b[40], *p = put_s(b, "TAKE ");
+    p = put_u(p, d / 1000000u); *p++ = '.'; p = put_u(p, d / 100000u % 10u); p = put_s(p, "s · ");
+    p = put_u(p, (uint32_t)nb); p = put_s(p, " BARS "); p = put_u(p, (uint32_t)(bpm + 0.5f)); *p = 0;
+    say(b);
+}
 COLD static void open_page(int b)
 {
     int pg = sticky;
@@ -3266,16 +3270,16 @@ COLD static void buttons(void)
             else if (oct < 3) oct++;
             break;
         case BTN_PLAY:
-            if (ft_on) { ft_on = 0; recording_armed = 0; say("TAKE CANCELLED"); break; }
+            if (ltake.armed_trk >= 0) { loop_cancel(&ltake); recording_armed = 0; say("TAKE CANCELLED"); break; }
             if (countin) { countin = 0; say("REC READY"); break; }               /* (the count-in let go: armed still) */
-            if (recording_armed && rec_count && !Q.playing && !(project_empty() && !rec_mode)) {   /* COUNT-IN */
+            if (recording_armed && rec_count && !Q.playing) {   /* COUNT-IN (grid arm only: a take open is cancelled above) */
                 countin = 1; cin_ticks = 0; cin_trk = trk; say("COUNT-IN: ONE BAR"); break;
             }
             transport(!Q.playing);
             break;
         case BTN_REC:                                    /* (3.3.6: tapped, it acts when let go; held 2 s, it only erases) */
             t_rec_down = time_ticks() | 1u; rec_hint = 0;
-            if (ft_on) { ft_close(); t_rec_down = 0; }
+            if (ltake.rec) { loop_close_take(); t_rec_down = 0; }
             else if (countin) { countin = 0; recording_armed = 0; say("REC OFF"); t_rec_down = 0; }
             break;
         case BTN_ENV: case BTN_LFO: open_page(b); break;
@@ -3288,13 +3292,20 @@ COLD static void buttons(void)
     if ((rel & (1u << BTN_REC)) && t_rec_down && rec_hint) { t_rec_down = 0; say("ERASE CANCELLED"); }   /* (held, then let go before 2 s: nothing) */
     if ((rel & (1u << BTN_REC)) && t_rec_down) {          /* REC tapped (let go before the erase): REC on or off */
         t_rec_down = 0;
-        if (Q.recording) seq_record(&Q, 0, trk);
-        else if (Q.playing) seq_record(&Q, 1, trk);
-        else {
-            recording_armed = !recording_armed;
-            if (!recording_armed) say("REC OFF");
-            else say(project_empty() && !rec_mode ? "REC READY · PLAY FREELY" : rec_count ? "REC READY · PLAY: COUNT-IN" : "REC READY · YOUR NOTE STARTS IT");
+        if (ltake.rec) { /* capturing: nothing (the take closes on REC press) */ }
+        else if (ltake.armed_trk >= 0) {                  /* armed but not capturing */
+            if (trk == ltake.armed_trk) { loop_cancel(&ltake); recording_armed = 0; say("REC OFF"); }
+            else if (loop_arm(&ltake, &Q, trk)) say(Q.playing ? "REC READY · YOUR NOTE STARTS IT" : "REC READY · PLAY FREELY");
+            else { loop_cancel(&ltake); recording_armed = 0; say("REC OFF"); }   /* a content track: disarm only */
         }
+        else if (Q.recording) seq_record(&Q, 0, trk);
+        else if (Q.playing) {                             /* playing, no take open */
+            if (loop_arm(&ltake, &Q, trk)) { recording_armed = 1; say("REC READY · YOUR NOTE STARTS IT"); }
+            else seq_record(&Q, 1, trk);
+        }
+        else if (recording_armed) { recording_armed = 0; say("REC OFF"); }
+        else if (loop_arm(&ltake, &Q, trk)) { recording_armed = 1; say("REC READY · PLAY FREELY"); }
+        else { recording_armed = 1; say(rec_count ? "REC READY · PLAY: COUNT-IN" : "REC READY · YOUR NOTE STARTS IT"); }
     }
     if (t_rec_down && !rec_hint && (uint32_t)(time_ticks() - t_rec_down) > 500000u * lsb) { rec_hint = 1; say("HOLD REC: ERASE THE TRACK"); }
     if (t_rec_down && (uint32_t)(time_ticks() - t_rec_down) > 2000000u * lsb) {   /* REC held: the track cleared (and nothing else) */
@@ -3506,7 +3517,7 @@ COLD static void choose_preset(int d)
         if (o[i & 15] < 0) continue;
         if (!snd_load(o[i & 15])) return;
         sb_cat = (uint8_t)c; sb_pg = (uint8_t)(i / 16); sb_trk = (int8_t)trk; sb_t = time_ticks();
-        int plain = !L && hold_step < 0 && !Q.recording && !recording_armed && !countin && !ft_on &&
+        int plain = !L && hold_step < 0 && !Q.recording && !recording_armed && !countin &&
                     sticky != PG_STEPS && sticky != PG_NOTES && sticky != PG_SONG && sticky != PG_SONG2 && sticky != PG_SEL;
         if (sticky != PG_SND && plain) { sb_back = (int8_t)sticky; sticky = PG_SND; sb_was = 1; }
         if (sticky == PG_SND && !L) { sb_n = (uint8_t)sb_list(sb_cat, sb_pg * 16, sb_o); return; }
@@ -3608,12 +3619,12 @@ COLD static void encoders(void)
             if (sticky == PG_NOTES) { if (is_drum(trk)) sticky = PG_STEPS; ne_step = 0; ne_sub = 0; ne_wrote = 0; }
             continue;
         }
-        if ((recording_armed || countin) && !Q.playing && !ft_on && !L) {   /* the REC screen */
+        if ((recording_armed || countin) && !Q.playing && !ltake.rec && !L) {   /* the REC screen */
             seq_track *k = &Q.t[trk];
             if (e == ENC_SELECT) tempo(Q.bpm + (float)da);
             if (e == ENC_PRESETS) choose_preset(d);
             if (kn == 0 && project_empty()) { rec_mode = (uint8_t)(d > 0); say(rec_mode ? "AT THE TEMPO SET (SELECT)" : "FREE TAKE: THE TEMPO FOLLOWS YOU"); }
-            if (kn == 1 && !(project_empty() && !rec_mode)) {   /* the loop: 1, 2, 4, 8 bars */
+            if (kn == 1 && ltake.armed_trk < 0 && !(project_empty() && !rec_mode)) {   /* the loop: 1, 2, 4, 8 bars (inert while a take is open) */
                 int spb = seq_steps_per_bar(&Q, trk), bars = k->pat[k->cur].steps / spb;
                 static const int B[4] = { 1, 2, 4, 8 }; int i = 0; while (i < 3 && B[i] < bars) i++;   /* (the first >= now) */
                 i = d > 0 ? (B[i] > bars ? i : i + 1) : i - 1;
@@ -3974,9 +3985,13 @@ COLD __attribute__((noinline)) static void ui_round(void)
     }
     if (chain_on && Q.song_play) { chain_on = 0; Q.switch_now = 0; }
     uint32_t now = time_ticks();
-    if (ft_on) {                                    /* the free take: what it would make; closed after 24 s */
-        if (ft_us() > 24000000u) ft_close();
-        else if ((uint32_t)(now - ft_said) > 400000u * lsb) { ft_said = now; ft_say(); }
+    if (ltake.rec) {                                    /* the take: what it would make; closed after 24 s */
+        int trk = ltake.armed_trk;
+        int was_playing = Q.playing;
+        uint32_t tick = Q.tick;
+        int nb = loop_poll(&ltake, &Q, (uint32_t)(now / lsb));
+        if (nb != 0) loop_closed(nb, trk, was_playing, tick);
+        else if ((uint32_t)(now - loop_said) > 400000u * lsb) { loop_said = now; loop_say(); }
     }
     if (save_soon && !saving && (uint32_t)(now - t_save_soon) > 1600000u * lsb) { save_soon = 0; save_project(1); }   /* (SAVE + a key) */
     if (fav_dirty && !saving && flash_ok && !sbuf_held() && (uint32_t)(now - fav_t) > 1200000u * lsb) { fav_dirty = 0; fav_save(); }   /* (3.2: your favourites, once they rest) */

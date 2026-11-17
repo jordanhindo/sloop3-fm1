@@ -5,7 +5,7 @@
  *   - each track loops on its own length (polymeter);
  *   - a pattern change waits for the next bar (or happens now): all tracks, or one track alone;
  *   - mutes belong to the performance, not to the patterns: a pattern change keeps them;
- *   - undo / redo of every edit (a take, a step, a clear, a length), 16 deep;
+ *   - undo / redo of every edit (a take, a step, a clear, a length), 8 deep;
  *   - live recording: a note is written where it was heard (the output's delay taken off), its length when the
  *     key is released; recording over a loop adds to it (overdub), a note played again where it already is
  *     takes its place (3.3.7)
